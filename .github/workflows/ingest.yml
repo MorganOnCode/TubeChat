@@ -41,6 +41,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install yt-dlp
+        run: |
+          sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+          yt-dlp --version
+
       - name: Create .env
         run: |
           cat > .env << EOF
@@ -55,12 +61,8 @@ jobs:
 
       - name: Test transcript extraction
         run: |
-          npx tsx -e "
-            const {YoutubeTranscript} = require('youtube-transcript');
-            YoutubeTranscript.fetchTranscript('GBUHyVmGw7k')
-              .then(s => { console.log('✅ Transcript test passed:', s.length, 'segments'); process.exit(0); })
-              .catch(e => { console.log('❌ Transcript test failed:', e.message); process.exit(1); });
-          "
+          yt-dlp --write-auto-sub --sub-lang en --sub-format json3 --skip-download --no-warnings -o "/tmp/test_caption" "https://www.youtube.com/watch?v=GBUHyVmGw7k"
+          ls -la /tmp/test_caption*.json3 && echo "✅ Caption extraction works!" || (echo "❌ Caption extraction failed" && exit 1)
 
       - name: Run ingestion
         run: |

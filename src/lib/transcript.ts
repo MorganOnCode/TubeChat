@@ -1,4 +1,7 @@
-import { YoutubeTranscript } from 'youtube-transcript';
+import { execSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
 export interface TranscriptSegment {
     text: string;
@@ -9,38 +12,137 @@ export interface TranscriptSegment {
 export interface TranscriptResult {
     text: string;
     segments: TranscriptSegment[];
-    source: 'youtube_captions' | 'extractor' | 'whisper';
+    source: 'youtube_captions' | 'extractor' | 'whisper' | 'yt-dlp';
 }
 
 /**
- * Fetch transcript for a YouTube video
- * Uses youtube-transcript package which extracts from YouTube's caption system
+ * Fetch transcript using yt-dlp auto-subtitle extraction (primary method).
+ * Downloads only the subtitle file, no audio/video.
  */
 export async function fetchTranscript(videoId: string): Promise<TranscriptResult | null> {
-    try {
-        const segments = await YoutubeTranscript.fetchTranscript(videoId);
+    // Try yt-dlp first (most reliable)
+    const ytdlpResult = await fetchTranscriptYtDlp(videoId);
+    if (ytdlpResult) return ytdlpResult;
 
-        if (!segments || segments.length === 0) {
+    // Fallback: try the old youtube-transcript package (may work in some environments)
+    try {
+        const { YoutubeTranscript } = await import('youtube-transcript');
+        const segments = await YoutubeTranscript.fetchTranscript(videoId);
+        if (segments && segments.length > 0) {
+            const transcriptSegments: TranscriptSegment[] = segments.map((seg: { text: string; offset: number; duration: number }) => ({
+                text: seg.text,
+                offset: Math.round(seg.offset),
+                duration: Math.round(seg.duration),
+            }));
+            const fullText = transcriptSegments.map((s) => s.text).join(' ');
+            return { text: fullText, segments: transcriptSegments, source: 'extractor' };
+        }
+    } catch {
+        // Expected to fail in most environments
+    }
+
+    return null;
+}
+
+/**
+ * Extract auto-generated captions using yt-dlp.
+ * Downloads only the subtitle file in json3 format, then parses it.
+ */
+async function fetchTranscriptYtDlp(videoId: string): Promise<TranscriptResult | null> {
+    const tempDir = os.tmpdir();
+    const outputBase = path.join(tempDir, `opentube_${videoId}`);
+
+    try {
+        // Check if yt-dlp is available
+        try {
+            execSync('yt-dlp --version', { stdio: 'ignore' });
+        } catch {
+            console.log(`[Transcript] yt-dlp not available, skipping`);
             return null;
         }
 
-        // Convert to our format
-        const transcriptSegments: TranscriptSegment[] = segments.map((seg) => ({
-            text: seg.text,
-            offset: Math.round(seg.offset),
-            duration: Math.round(seg.duration),
-        }));
+        console.log(`[Transcript] Fetching captions via yt-dlp for ${videoId}...`);
 
-        // Combine all segments into full text
-        const fullText = transcriptSegments.map((s) => s.text).join(' ');
+        // Download auto-generated English captions in json3 format
+        execSync(
+            `yt-dlp --write-auto-sub --sub-lang "en,en-orig" --sub-format json3 --skip-download --no-warnings -o "${outputBase}" "https://www.youtube.com/watch?v=${videoId}"`,
+            { stdio: 'pipe', timeout: 60000 }
+        );
+
+        // Find the downloaded subtitle file
+        const possibleFiles = [
+            `${outputBase}.en.json3`,
+            `${outputBase}.en-orig.json3`,
+        ];
+
+        let subtitleFile: string | null = null;
+        for (const f of possibleFiles) {
+            if (fs.existsSync(f)) {
+                subtitleFile = f;
+                break;
+            }
+        }
+
+        if (!subtitleFile) {
+            // Check for any json3 file with this base
+            const dir = path.dirname(outputBase);
+            const base = path.basename(outputBase);
+            const files = fs.readdirSync(dir).filter(f => f.startsWith(base) && f.endsWith('.json3'));
+            if (files.length > 0) {
+                subtitleFile = path.join(dir, files[0]);
+            }
+        }
+
+        if (!subtitleFile) {
+            console.log(`[Transcript] No subtitle file found for ${videoId}`);
+            return null;
+        }
+
+        console.log(`[Transcript] Parsing subtitle file: ${path.basename(subtitleFile)}`);
+
+        const raw = fs.readFileSync(subtitleFile, 'utf-8');
+        const data = JSON.parse(raw);
+
+        // Parse json3 format: { events: [{ tStartMs, dDurationMs, segs: [{ utf8 }] }] }
+        const events = (data.events || []).filter((e: { segs?: unknown[] }) => e.segs && e.segs.length > 0);
+
+        const segments: TranscriptSegment[] = events.map((e: { tStartMs: number; dDurationMs: number; segs: { utf8: string }[] }) => ({
+            text: e.segs.map((s: { utf8: string }) => s.utf8 || '').join('').trim(),
+            offset: e.tStartMs || 0,
+            duration: e.dDurationMs || 0,
+        })).filter((s: TranscriptSegment) => s.text.length > 0);
+
+        // Clean up
+        fs.unlinkSync(subtitleFile);
+
+        if (segments.length === 0) {
+            console.log(`[Transcript] Parsed 0 segments for ${videoId}`);
+            return null;
+        }
+
+        const fullText = segments.map(s => s.text).join(' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+
+        console.log(`[Transcript] ✅ Got ${segments.length} segments (${fullText.length} chars) for ${videoId}`);
 
         return {
             text: fullText,
-            segments: transcriptSegments,
-            source: 'extractor',
+            segments,
+            source: 'yt-dlp',
         };
+
     } catch (error) {
-        console.error(`Failed to fetch transcript for ${videoId}:`, error);
+        console.error(`[Transcript] yt-dlp error for ${videoId}:`, error);
+
+        // Clean up any partial files
+        const dir = path.dirname(outputBase);
+        const base = path.basename(outputBase);
+        try {
+            const files = fs.readdirSync(dir).filter(f => f.startsWith(base));
+            files.forEach(f => fs.unlinkSync(path.join(dir, f)));
+        } catch { /* ignore cleanup errors */ }
+
         return null;
     }
 }
@@ -65,7 +167,7 @@ export function formatTranscriptWithTimestamps(segments: TranscriptSegment[]): s
  */
 export function groupIntoParagraphs(
     segments: TranscriptSegment[],
-    pauseThreshold: number = 2000 // 2 seconds
+    pauseThreshold: number = 2000
 ): string[] {
     if (segments.length === 0) return [];
 
@@ -75,7 +177,6 @@ export function groupIntoParagraphs(
     for (let i = 0; i < segments.length; i++) {
         currentParagraph.push(segments[i].text);
 
-        // Check if there's a significant pause before the next segment
         if (i < segments.length - 1) {
             const currentEnd = segments[i].offset + segments[i].duration;
             const nextStart = segments[i + 1].offset;
@@ -88,7 +189,6 @@ export function groupIntoParagraphs(
         }
     }
 
-    // Add remaining text
     if (currentParagraph.length > 0) {
         paragraphs.push(currentParagraph.join(' ').trim());
     }
@@ -115,79 +215,8 @@ export function createSnippet(
 
     let snippet = text.slice(start, end);
 
-    // Add ellipsis if we're not at the boundaries
     if (start > 0) snippet = '...' + snippet;
     if (end < text.length) snippet = snippet + '...';
 
     return snippet;
 }
-
-/**
- * Clean up raw transcript text for better readability
- */
-export function cleanTranscriptText(
-    text: string,
-    options: {
-        removeFillers?: boolean;
-        addParagraphs?: boolean;
-        sentencesPerParagraph?: number;
-    } = {}
-): string {
-    const {
-        removeFillers = true,
-        addParagraphs = true,
-        sentencesPerParagraph = 4,
-    } = options;
-
-    let cleaned = text;
-
-    // Decode HTML entities (handle double-encoded entities first)
-    cleaned = cleaned
-        .replace(/&amp;#39;/g, "'")
-        .replace(/&amp;quot;/g, '"')
-        .replace(/&amp;amp;/g, '&')
-        .replace(/&amp;lt;/g, '<')
-        .replace(/&amp;gt;/g, '>')
-        .replace(/&#39;/g, "'")
-        .replace(/&quot;/g, '"')
-        .replace(/&amp;/g, '&')
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&nbsp;/g, ' ');
-
-    // Remove verbal fillers if requested
-    if (removeFillers) {
-        // Remove common verbal fillers (case insensitive, with word boundaries)
-        cleaned = cleaned
-            .replace(/\b(um|uh|er|ah)\b[,.]?\s*/gi, '')
-            .replace(/\byou know[,.]?\s*/gi, '')
-            .replace(/\blike\b[,.]?\s+(?=\b(um|uh|I|we|they|he|she|it|you|so|and|but|the|a|an)\b)/gi, '');
-    }
-
-    // Normalize whitespace
-    cleaned = cleaned
-        .replace(/\s+/g, ' ')
-        .trim();
-
-    // Add paragraph breaks if requested
-    if (addParagraphs && sentencesPerParagraph > 0) {
-        // Split by sentence endings
-        const sentences = cleaned.match(/[^.!?]+[.!?]+\s*/g) || [cleaned];
-        const paragraphs: string[] = [];
-
-        for (let i = 0; i < sentences.length; i += sentencesPerParagraph) {
-            const paragraph = sentences
-                .slice(i, i + sentencesPerParagraph)
-                .join('')
-                .trim();
-            if (paragraph) {
-                paragraphs.push(paragraph);
-            }
-        }
-
-        cleaned = paragraphs.join('\n\n');
-    }
-
-    return cleaned;
-}
-
