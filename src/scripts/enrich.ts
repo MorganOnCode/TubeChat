@@ -3,7 +3,7 @@ import { config } from 'dotenv';
 import { processTranscript } from '../lib/llm';
 
 // Load environment variables from .env.local
-config({ path: '.env.local' });
+config();
 
 function getArg(name: string): string | null {
     const arg = process.argv.find(a => a.startsWith(`--${name}=`));

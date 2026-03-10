@@ -2,7 +2,7 @@ import { createClient } from '@supabase/supabase-js';
 import { config } from 'dotenv';
 import { generateEmbedding } from '../lib/llm';
 
-config({ path: '.env.local' });
+config();
 
 // Initialize Supabase
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
