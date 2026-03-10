@@ -177,6 +177,8 @@ export default async function SearchPage({ searchParams }: PageProps) {
                                             {highlightText(video.title, query)}
                                         </h2>
                                         <div className="mt-1 flex items-center gap-2 text-xs text-[var(--foreground-muted)]">
+                                            {video.channel?.name && <span className="text-[var(--color-accent)]">{video.channel.name}</span>}
+                                            {video.channel?.name && <span>·</span>}
                                             <span>{formatDate(video.published_at)}</span>
                                             {video.duration_seconds && (
                                                 <>

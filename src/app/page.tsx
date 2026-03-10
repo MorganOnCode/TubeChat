@@ -23,6 +23,20 @@ async function getTags(): Promise<Tag[]> {
   }
 }
 
+async function getStats(): Promise<{ videos: number; channels: number; transcripts: number }> {
+  try {
+    const supabase = createBrowserClient();
+    const [{ count: videos }, { count: channels }, { count: transcripts }] = await Promise.all([
+      supabase.from('videos').select('id', { count: 'exact', head: true }).eq('status', 'completed'),
+      supabase.from('channels').select('id', { count: 'exact', head: true }),
+      supabase.from('transcripts').select('id', { count: 'exact', head: true }).eq('processing_status', 'completed'),
+    ]);
+    return { videos: videos || 0, channels: channels || 0, transcripts: transcripts || 0 };
+  } catch {
+    return { videos: 0, channels: 0, transcripts: 0 };
+  }
+}
+
 function formatDate(dateString?: string): string {
   if (!dateString) return "";
   return new Date(dateString).toLocaleDateString("en-US", {
@@ -108,7 +122,7 @@ const FEATURED_CHANNELS = [
   { name: "Third Eye Drops", slug: "third-eye-drops-with-michael-phillip", emoji: "🧠" },
 ];
 
-function HeroSection() {
+function HeroSection({ stats }: { stats: { videos: number; channels: number; transcripts: number } }) {
   return (
     <section className="relative h-[520px] sm:h-[560px] overflow-hidden noise">
       <div
@@ -153,9 +167,11 @@ function HeroSection() {
             <span>Auto-updating</span>
           </div>
           <span>·</span>
-          <span>10 channels</span>
+          <span>{stats.channels} channels</span>
           <span>·</span>
-          <span>AI summaries</span>
+          <span>{stats.videos} videos</span>
+          <span>·</span>
+          <span>{stats.transcripts} transcripts</span>
         </div>
       </div>
     </section>
@@ -163,11 +179,11 @@ function HeroSection() {
 }
 
 export default async function Home() {
-  const [videos, tags] = await Promise.all([getLatestVideos(), getTags()]);
+  const [videos, tags, stats] = await Promise.all([getLatestVideos(), getTags(), getStats()]);
 
   return (
     <div>
-      <HeroSection />
+      <HeroSection stats={stats} />
 
       {/* Channels Grid */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">

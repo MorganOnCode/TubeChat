@@ -3,7 +3,7 @@ import Link from "next/link";
 import { createBrowserClient, getVideoByYoutubeId, type VideoWithDetails } from "@/lib/supabase";
 import { Metadata } from "next";
 import { CopyButton } from "@/components/CopyButton";
-import { cleanTranscriptText } from "@/lib/transcript";
+import { cleanTranscriptText } from "@/lib/transcript-utils";
 
 export const revalidate = 300;
 
