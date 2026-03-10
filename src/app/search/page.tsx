@@ -12,14 +12,14 @@ export async function generateMetadata({ searchParams }: PageProps): Promise<Met
 
     if (q) {
         return {
-            title: `Search: ${q} - HoskSaid`,
-            description: `Search results for "${q}" in Charles Hoskinson's transcripts.`,
+            title: `Search: ${q} - OpenTube`,
+            description: `Search results for "${q}" in creator transcripts.`,
         };
     }
 
     return {
-        title: "Search - HoskSaid",
-        description: "Search through Charles Hoskinson's video transcripts.",
+        title: "Search - OpenTube",
+        description: "Search through YouTube creator transcripts.",
     };
 }
 
@@ -214,7 +214,7 @@ export default async function SearchPage({ searchParams }: PageProps) {
                     </svg>
                     <p className="text-sm font-medium text-[var(--foreground-muted)]">Search the transcript library</p>
                     <p className="mt-1 text-xs text-[var(--foreground-muted)]">
-                        Find specific topics, quotes, or ideas from Charles Hoskinson&apos;s videos
+                        Find specific topics, quotes, or ideas across curated YouTube collections.
                     </p>
                 </div>
             )}

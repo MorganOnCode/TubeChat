@@ -4,8 +4,8 @@ import { createBrowserClient, getVideos, type VideoWithDetails } from "@/lib/sup
 export const revalidate = 300;
 
 export const metadata = {
-    title: "All Videos - HoskSaid",
-    description: "Browse all transcribed videos from Charles Hoskinson's YouTube channel.",
+    title: "All Videos - OpenTube",
+    description: "Browse all transcribed videos from curated YouTube channels.",
 };
 
 async function getAllVideos(): Promise<VideoWithDetails[]> {

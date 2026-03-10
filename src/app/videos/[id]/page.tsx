@@ -26,11 +26,11 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
     const video = await getVideo(id);
 
     if (!video) {
-        return { title: "Video Not Found - HoskSaid" };
+        return { title: "Video Not Found - OpenTube" };
     }
 
     return {
-        title: `${video.title} - HoskSaid`,
+        title: `${video.title} - OpenTube`,
         description: video.transcript?.summary?.slice(0, 160) || video.description?.slice(0, 160),
         openGraph: {
             title: video.title,
@@ -221,7 +221,7 @@ export default async function VideoPage({ params }: PageProps) {
                 <p className="text-xs text-[var(--foreground-muted)]">
                     Help improve this transcript by{" "}
                     <a
-                        href={`mailto:report@hosksaid.com?subject=Transcript Error: ${encodeURIComponent(video.title)}`}
+                        href={`mailto:hello@opentube.app?subject=Transcript Error: ${encodeURIComponent(video.title)}`}
                         className="text-[var(--color-accent)] hover:underline"
                     >
                         reporting an error

@@ -26,7 +26,7 @@ async function enrichVideos() {
     const videoIdArg = getArg('video');
     const forceUpdate = process.argv.includes('--force');
 
-    console.log('🧠 HoskSaid Enrichment Script');
+    console.log('🧠 OpenTube Enrichment Script');
     console.log('-----------------------------');
 
     // Build Query

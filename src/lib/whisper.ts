@@ -12,7 +12,7 @@ import { TranscriptResult, TranscriptSegment } from './transcript';
  */
 export async function transcribeWithWhisper(videoId: string): Promise<TranscriptResult | null> {
     const tempDir = os.tmpdir();
-    const outputTemplate = path.join(tempDir, `hosksaid_${videoId}.%(ext)s`);
+    const outputTemplate = path.join(tempDir, `opentube_${videoId}.%(ext)s`);
     // Ideally we want mp3 or m4a. Whisper supports m4a, mp3, webm, mp4, mpga, wav, mpeg.
     // yt-dlp -x extracts audio. --audio-format mp3 ensures compatibility.
 
@@ -37,7 +37,7 @@ export async function transcribeWithWhisper(videoId: string): Promise<Transcript
         });
 
         // Find the generated file (outputTemplate has %(ext)s, so the file will end in .mp3)
-        const expectedFile = path.join(tempDir, `hosksaid_${videoId}.mp3`);
+        const expectedFile = path.join(tempDir, `opentube_${videoId}.mp3`);
 
         if (!fs.existsSync(expectedFile)) {
             console.error(`❌ Failed to find downloaded audio file: ${expectedFile}`);
@@ -93,7 +93,7 @@ export async function transcribeWithWhisper(videoId: string): Promise<Transcript
         console.error(`❌ [Whisper] Error processing video ${videoId}:`, error);
 
         // Try to cleanup if file exists
-        const expectedFile = path.join(tempDir, `hosksaid_${videoId}.mp3`);
+        const expectedFile = path.join(tempDir, `opentube_${videoId}.mp3`);
         if (fs.existsSync(expectedFile)) {
             fs.unlinkSync(expectedFile);
         }
