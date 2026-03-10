@@ -142,24 +142,22 @@ function HeroSection({ stats }: { stats: { videos: number; channels: number; tra
           AI-powered summaries, full-text search, and curated collections.
         </p>
 
-        <form action="/search" method="GET" className="mt-8 w-full max-w-lg">
-          <div className="relative search-glow rounded-full">
-            <input
-              type="text"
-              name="q"
-              placeholder="Search transcripts... e.g. &quot;crash retrievals&quot; or &quot;Wilson memo&quot;"
-              className="w-full h-12 sm:h-14 pl-5 pr-14 rounded-full bg-[var(--background-secondary)]/90 backdrop-blur-sm border border-[var(--border)] text-[var(--foreground)] placeholder:text-[var(--foreground-muted)] focus:border-[var(--color-accent)] transition-all text-sm"
-            />
-            <button
-              type="submit"
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center rounded-full bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-light)] transition-colors"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            </button>
+        <div className="mt-8 w-full max-w-lg">
+          <Link
+            href="/ask"
+            className="flex items-center gap-3 w-full h-12 sm:h-14 px-5 rounded-full bg-[var(--background-secondary)]/90 backdrop-blur-sm border border-[var(--border)] text-[var(--foreground-muted)] hover:border-[var(--color-accent)] search-glow transition-all text-sm group"
+          >
+            <svg className="w-4 h-4 group-hover:text-[var(--color-accent)] transition-colors" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+            </svg>
+            <span>Ask anything about UFOs, UAPs, NHI research...</span>
+          </Link>
+          <div className="mt-2 flex justify-center gap-4 text-xs text-white/40">
+            <Link href="/search" className="hover:text-[var(--color-accent)] transition-colors">
+              or use keyword search →
+            </Link>
           </div>
-        </form>
+        </div>
 
         <div className="mt-6 flex items-center justify-center gap-6 sm:gap-8 text-xs text-white/50">
           <div className="flex items-center gap-1.5">
