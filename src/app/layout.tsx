@@ -6,6 +6,8 @@ import ChatWidget from "@/components/ChatWidget";
 import { ClerkProvider, SignInButton, SignUpButton, Show, UserButton } from "@clerk/nextjs";
 import { dark } from "@clerk/themes";
 
+const clerkEnabled = !!process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+
 const inter = Inter({
   variable: "--font-geist-sans",
   subsets: ["latin"],
@@ -71,24 +73,26 @@ function Header() {
               <span className="text-xs font-medium">Ask</span>
             </Link>
 
-            <div className="ml-2 flex items-center gap-2">
-              <Show when="signed-out">
-                <SignInButton mode="modal">
-                  <button className="px-3 py-1.5 text-xs text-[var(--foreground-muted)] hover:text-[var(--foreground)] hover:bg-[var(--background-tertiary)] rounded-md transition-all">
-                    Sign in
-                  </button>
-                </SignInButton>
-              </Show>
-              <Show when="signed-in">
-                <UserButton
-                  appearance={{
-                    elements: {
-                      avatarBox: "w-7 h-7",
-                    },
-                  }}
-                />
-              </Show>
-            </div>
+            {clerkEnabled && (
+              <div className="ml-2 flex items-center gap-2">
+                <Show when="signed-out">
+                  <SignInButton mode="modal">
+                    <button className="px-3 py-1.5 text-xs text-[var(--foreground-muted)] hover:text-[var(--foreground)] hover:bg-[var(--background-tertiary)] rounded-md transition-all">
+                      Sign in
+                    </button>
+                  </SignInButton>
+                </Show>
+                <Show when="signed-in">
+                  <UserButton
+                    appearance={{
+                      elements: {
+                        avatarBox: "w-7 h-7",
+                      },
+                    }}
+                  />
+                </Show>
+              </div>
+            )}
           </nav>
         </div>
       </div>
@@ -152,21 +156,39 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${inter.variable} antialiased min-h-screen`}>
-        <ClerkProvider appearance={{ baseTheme: dark }}>
-          <Header />
-          <main className="pt-14">
-            {children}
-          </main>
-          <ChatWidget
-            suggestions={[
-              "What do channels say about crash retrievals?",
-              "Who is David Grusch?",
-              "What evidence exists for UAPs?",
-              "Explain remote viewing and Project Stargate",
-            ]}
-          />
-          <Footer />
-        </ClerkProvider>
+        {clerkEnabled ? (
+          <ClerkProvider appearance={{ baseTheme: dark }}>
+            <Header />
+            <main className="pt-14">
+              {children}
+            </main>
+            <ChatWidget
+              suggestions={[
+                "What do channels say about crash retrievals?",
+                "Who is David Grusch?",
+                "What evidence exists for UAPs?",
+                "Explain remote viewing and Project Stargate",
+              ]}
+            />
+            <Footer />
+          </ClerkProvider>
+        ) : (
+          <>
+            <Header />
+            <main className="pt-14">
+              {children}
+            </main>
+            <ChatWidget
+              suggestions={[
+                "What do channels say about crash retrievals?",
+                "Who is David Grusch?",
+                "What evidence exists for UAPs?",
+                "Explain remote viewing and Project Stargate",
+              ]}
+            />
+            <Footer />
+          </>
+        )}
       </body>
     </html>
   );
