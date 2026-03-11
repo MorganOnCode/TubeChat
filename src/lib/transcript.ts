@@ -20,11 +20,26 @@ export interface TranscriptResult {
  * Downloads only the subtitle file, no audio/video.
  */
 export async function fetchTranscript(videoId: string): Promise<TranscriptResult | null> {
-    // Try yt-dlp first (most reliable)
+    // Try yt-dlp first (most reliable, works from residential IPs)
     const ytdlpResult = await fetchTranscriptYtDlp(videoId);
     if (ytdlpResult) return ytdlpResult;
 
-    // Fallback: try the old youtube-transcript package (may work in some environments)
+    // Try Supadata API (works from any IP, needs API key)
+    try {
+        const { fetchTranscriptSupadata } = await import('./transcript-supadata');
+        const supadataResult = await fetchTranscriptSupadata(videoId);
+        if (supadataResult) {
+            return {
+                text: supadataResult.text,
+                segments: supadataResult.segments,
+                source: 'yt-dlp', // normalize source for DB
+            };
+        }
+    } catch {
+        // Supadata not available
+    }
+
+    // Fallback: try the old youtube-transcript package
     try {
         const { YoutubeTranscript } = await import('youtube-transcript');
         const segments = await YoutubeTranscript.fetchTranscript(videoId);
