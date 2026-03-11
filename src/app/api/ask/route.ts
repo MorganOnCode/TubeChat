@@ -11,7 +11,7 @@ function getAdminClient() {
 
 export async function POST(request: NextRequest) {
     try {
-        const { question } = await request.json();
+        const { question, channelId, videoId, topicName } = await request.json();
 
         if (!question || typeof question !== 'string' || question.trim().length < 3) {
             return Response.json({ error: 'Question too short' }, { status: 400 });
@@ -27,11 +27,54 @@ export async function POST(request: NextRequest) {
 
         // 2. Vector search for relevant transcript chunks
         const supabase = getAdminClient();
-        const { data: chunks, error: searchError } = await supabase.rpc('match_transcript_chunks', {
-            query_embedding: embedding,
-            match_threshold: 0.4,
-            match_count: 15,
-        });
+
+        // If scoped to a channel or video, get matching video IDs first
+        let scopeVideoIds: string[] | null = null;
+
+        if (videoId) {
+            const { data } = await supabase
+                .from('videos')
+                .select('id')
+                .eq('youtube_id', videoId)
+                .limit(1);
+            if (data && data.length > 0) scopeVideoIds = [data[0].id];
+        } else if (channelId) {
+            const { data } = await supabase
+                .from('videos')
+                .select('id')
+                .eq('channel_id', channelId)
+                .eq('status', 'completed');
+            if (data) scopeVideoIds = data.map(v => v.id);
+        } else if (topicName) {
+            // Find tag, then videos with that tag
+            const { data: tags } = await supabase.from('tags').select('id').ilike('name', topicName).limit(1);
+            if (tags && tags.length > 0) {
+                const { data: vt } = await supabase.from('video_tags').select('video_id').eq('tag_id', tags[0].id);
+                if (vt) scopeVideoIds = vt.map(v => v.video_id);
+            }
+        }
+
+        let chunks: any[];
+        let searchError: any;
+
+        if (scopeVideoIds && scopeVideoIds.length > 0) {
+            // Scoped search: vector search then filter by video IDs
+            const result = await supabase.rpc('match_transcript_chunks', {
+                query_embedding: embedding,
+                match_threshold: 0.35,
+                match_count: 50,
+            });
+            searchError = result.error;
+            chunks = (result.data || []).filter((c: any) => scopeVideoIds!.includes(c.video_id)).slice(0, 15);
+        } else {
+            const result = await supabase.rpc('match_transcript_chunks', {
+                query_embedding: embedding,
+                match_threshold: 0.4,
+                match_count: 15,
+            });
+            searchError = result.error;
+            chunks = result.data || [];
+        }
 
         if (searchError) {
             console.error('Vector search error:', searchError);

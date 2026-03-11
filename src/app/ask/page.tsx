@@ -122,6 +122,7 @@ function AnswerDisplay({ result }: { result: AskResult }) {
 
 export default function AskPage() {
     const [question, setQuestion] = useState("");
+    const [activeQuestion, setActiveQuestion] = useState("");
     const [loading, setLoading] = useState(false);
     const [result, setResult] = useState<AskResult | null>(null);
     const [error, setError] = useState<string | null>(null);
@@ -134,8 +135,13 @@ export default function AskPage() {
     }, []);
 
     useEffect(() => {
-        bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [history, result, loading]);
+        if (bottomRef.current) {
+            // Use requestAnimationFrame to ensure DOM has rendered
+            requestAnimationFrame(() => {
+                bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+            });
+        }
+    }, [history.length, loading]);
 
     const handleSubmit = async (q?: string) => {
         const queryText = q || question;
@@ -143,19 +149,21 @@ export default function AskPage() {
 
         // Save previous result to history
         if (result) {
-            setHistory(prev => [...prev, { question: question, result }]);
+            setHistory(prev => [...prev, { question: activeQuestion, result }]);
         }
 
+        const submittedQuestion = queryText.trim();
+        setActiveQuestion(submittedQuestion);
         setLoading(true);
         setError(null);
         setResult(null);
-        setQuestion(queryText);
+        setQuestion("");
 
         try {
             const res = await fetch('/api/ask', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ question: queryText.trim() }),
+                body: JSON.stringify({ question: submittedQuestion }),
             });
 
             if (!res.ok) {
@@ -169,7 +177,6 @@ export default function AskPage() {
             console.error('Ask error:', err);
         } finally {
             setLoading(false);
-            setQuestion("");
         }
     };
 
@@ -243,7 +250,7 @@ export default function AskPage() {
                                 <div className="flex-shrink-0 w-7 h-7 rounded-full bg-[var(--background-tertiary)] flex items-center justify-center text-xs">
                                     👤
                                 </div>
-                                <p className="text-sm font-medium pt-1">{question || history[history.length - 1]?.question}</p>
+                                <p className="text-sm font-medium pt-1">{activeQuestion}</p>
                             </div>
                             <div className="flex gap-3">
                                 <div className="flex-shrink-0 w-7 h-7 rounded-full bg-[var(--color-accent)]/20 flex items-center justify-center text-xs">

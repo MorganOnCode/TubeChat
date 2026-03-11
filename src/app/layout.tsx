@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import Link from "next/link";
+import ChatWidget from "@/components/ChatWidget";
 
 const inter = Inter({
   variable: "--font-geist-sans",
@@ -134,6 +135,14 @@ export default function RootLayout({
         <main className="pt-14">
           {children}
         </main>
+        <ChatWidget
+          suggestions={[
+            "What do channels say about crash retrievals?",
+            "Who is David Grusch?",
+            "What evidence exists for UAPs?",
+            "Explain remote viewing and Project Stargate",
+          ]}
+        />
         <Footer />
       </body>
     </html>
