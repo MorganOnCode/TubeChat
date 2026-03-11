@@ -1,5 +1,5 @@
 {
-  "name": "creator-faq",
+  "name": "opentube-creator-hub",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -37,5 +37,6 @@
     "tailwindcss": "^4",
     "tsx": "^4.21.0",
     "typescript": "^5"
-  }
+  },
+  "description": "AI-powered transcript search across UFO/UAP/NHI YouTube channels"
 }

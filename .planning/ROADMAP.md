@@ -4,9 +4,9 @@
 
 ### Phase 1: Project Setup & Database
 **Goal:** Fork codebase, set up new Supabase instance, update schema for multi-channel
-- Copy HoskSaid codebase to `projects/creator-faq/`
+- Copy OpenTube codebase to `projects/creator-faq/`
 - Rename project, update package.json, branding
-- Create new Supabase project (separate from HoskSaid)
+- Create new Supabase project (separate from OpenTube)
 - Update schema: add `slug` to channels, add `collections` table, add `channel_collections` junction table
 - Update .env with new credentials
 - Verify existing ingest script works against new DB

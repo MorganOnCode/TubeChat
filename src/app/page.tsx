@@ -79,36 +79,36 @@ export default async function Home() {
   return (
     <div>
       {/* Hero */}
-      <section className="relative min-h-[480px] sm:min-h-[520px] overflow-hidden noise">
-        <div className="absolute inset-0 bg-gradient-to-b from-emerald-950/20 via-[var(--background)] to-[var(--background)]" />
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[400px] bg-[var(--color-accent)]/5 rounded-full blur-[120px]" />
+      <section className="relative min-h-[420px] sm:min-h-[480px] overflow-hidden starfield noise">
+        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[var(--background)]/40 to-[var(--background)]" />
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-[var(--color-accent)]/4 rounded-full blur-[100px]" />
 
-        <div className="relative z-10 flex flex-col items-center justify-center min-h-[480px] sm:min-h-[520px] px-4 sm:px-6 text-center">
+        <div className="relative z-10 flex flex-col items-center justify-center min-h-[420px] sm:min-h-[480px] px-4 sm:px-6 text-center">
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[var(--color-accent)]/10 border border-[var(--color-accent)]/20 text-[var(--color-accent)] text-[11px] font-medium tracking-wide uppercase mb-6">
             <div className="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)] animate-pulse" />
             {stats.videos} videos indexed · {stats.chunks.toLocaleString()} searchable segments
           </div>
 
-          <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold tracking-tight">
+          <h1 className="text-3xl sm:text-5xl lg:text-6xl font-bold tracking-tight">
             <span className="text-[var(--foreground)]">Open</span><span className="text-[var(--color-accent)]">Tube</span>
           </h1>
 
-          <p className="mt-4 text-base sm:text-lg text-[var(--foreground-muted)] max-w-lg leading-relaxed">
+          <p className="mt-3 sm:mt-4 text-sm sm:text-lg text-[var(--foreground-muted)] max-w-lg leading-relaxed px-2">
             AI-powered transcript search across the best UFO, UAP &amp; NHI research channels. Ask questions, discover connections.
           </p>
 
-          <div className="mt-8 w-full max-w-lg">
+          <div className="mt-6 sm:mt-8 w-full max-w-lg px-2">
             <Link
               href="/ask"
-              className="flex items-center gap-3 w-full h-13 sm:h-14 px-5 rounded-xl bg-[var(--background-secondary)]/80 backdrop-blur-sm border border-[var(--border)] text-[var(--foreground-muted)] hover:border-[var(--color-accent)]/50 search-glow transition-all text-sm group"
+              className="flex items-center gap-2 sm:gap-3 w-full h-12 sm:h-14 px-4 sm:px-5 rounded-xl bg-[var(--background-secondary)]/80 backdrop-blur-sm border border-[var(--border)] text-[var(--foreground-muted)] hover:border-[var(--color-accent)]/50 search-glow transition-all text-xs sm:text-sm group"
             >
-              <svg className="w-4 h-4 text-[var(--color-accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-4 h-4 flex-shrink-0 text-[var(--color-accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
               </svg>
-              Ask anything about UFOs, UAPs, NHI research...
-              <span className="ml-auto text-[10px] text-[var(--foreground-muted)]/50 hidden sm:block">Powered by RAG</span>
+              <span className="truncate">Ask anything about UFOs, UAPs, NHI research...</span>
+              <span className="ml-auto text-[10px] text-[var(--foreground-muted)]/50 hidden sm:block flex-shrink-0">Powered by RAG</span>
             </Link>
-            <div className="mt-3 flex justify-center gap-3 text-[11px] text-[var(--foreground-muted)]/60">
+            <div className="mt-3 flex justify-center gap-3 text-[10px] sm:text-[11px] text-[var(--foreground-muted)]/60">
               <Link href="/search" className="hover:text-[var(--color-accent)] transition-colors">Keyword search</Link>
               <span>·</span>
               <Link href="/topics" className="hover:text-[var(--color-accent)] transition-colors">Browse topics</Link>

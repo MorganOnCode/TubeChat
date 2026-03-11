@@ -4,7 +4,7 @@
 YouTube transcript library and research engine. Accepts any YouTube channel, ingests all videos (videos, lives, shorts), processes transcripts with LLM (clean, summarise, tag), stores in database, and serves a public website with per-creator pages, search, and markdown download.
 
 ## Rebuild Context
-This is a rebuild of [HoskSaid](https://github.com/MorganOnCode/HoskSaid) — existing Next.js + Supabase + Tailwind app. The codebase is solid and will be evolved, NOT rewritten from scratch. The original HoskSaid repo and deployment (hosk-said.vercel.app) must NOT be modified.
+This is a rebuild of [OpenTube](https://github.com/MorganOnCode/OpenTube) — existing Next.js + Supabase + Tailwind app. The codebase is solid and will be evolved, NOT rewritten from scratch. The original OpenTube repo and deployment (hosk-said.vercel.app) must NOT be modified.
 
 ## Core Requirements
 
@@ -100,4 +100,4 @@ This is a rebuild of [HoskSaid](https://github.com/MorganOnCode/HoskSaid) — ex
 - Claude Max subscription shared with Jarvis — be mindful of rate limits
 - YouTube Data API quota: 10,000 units/day (free tier)
 - OpenAI Whisper costs: ~$0.006/min of audio
-- HoskSaid repo/deployment is READ-ONLY — no modifications permitted
+- OpenTube repo/deployment is READ-ONLY — no modifications permitted
