@@ -47,8 +47,14 @@ function Header() {
               Videos
             </Link>
             <Link
-              href="/search"
+              href="/topics"
               className="px-3 py-1.5 text-sm text-[var(--foreground-muted)] hover:text-[var(--foreground)] hover:bg-[var(--background-tertiary)] rounded-md transition-all"
+            >
+              Topics
+            </Link>
+            <Link
+              href="/search"
+              className="px-3 py-1.5 text-sm text-[var(--foreground-muted)] hover:text-[var(--foreground)] hover:bg-[var(--background-tertiary)] rounded-md transition-all hidden sm:block"
             >
               Search
             </Link>

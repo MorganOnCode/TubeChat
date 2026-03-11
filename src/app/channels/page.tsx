@@ -78,7 +78,7 @@ export default async function ChannelsPage() {
                 {channels.map((channel) => (
                     <Link
                         key={channel.id}
-                        href={`/videos?channel=${channel.slug}`}
+                        href={`/channels/${channel.slug}`}
                         className="group flex gap-4 p-4 rounded-lg bg-[var(--background-secondary)] border border-[var(--border)] card-hover"
                     >
                         {/* Channel avatar */}
