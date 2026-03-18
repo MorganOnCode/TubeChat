@@ -73,7 +73,13 @@ export interface ErrorReport {
 }
 
 // Client for browser/public access (uses anon key)
+// Singleton clients — avoid creating new connections on every request
+let _browserClient: ReturnType<typeof createClient> | null = null;
+let _serverClient: ReturnType<typeof createClient> | null = null;
+
 export function createBrowserClient() {
+  if (_browserClient) return _browserClient;
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
@@ -81,11 +87,14 @@ export function createBrowserClient() {
     throw new Error('Missing Supabase environment variables');
   }
 
-  return createClient(supabaseUrl, supabaseAnonKey);
+  _browserClient = createClient(supabaseUrl, supabaseAnonKey);
+  return _browserClient;
 }
 
 // Client for server/admin access (uses service role key)
 export function createServerClient() {
+  if (_serverClient) return _serverClient;
+
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -93,7 +102,8 @@ export function createServerClient() {
     throw new Error('Missing Supabase environment variables');
   }
 
-  return createClient(supabaseUrl, supabaseServiceKey);
+  _serverClient = createClient(supabaseUrl, supabaseServiceKey);
+  return _serverClient;
 }
 
 // Helper functions for common operations

@@ -4,3 +4,11 @@ node_modules/
 *.log
 .env
 .vercel
+
+# Local data (not for Vercel)
+data/
+backup/
+obsidian-vault/
+obsidian-vault.tar.gz
+scripts/enrichment.log
+scripts/enrich.pid

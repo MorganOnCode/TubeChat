@@ -2,9 +2,15 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import Link from "next/link";
-import ChatWidget from "@/components/ChatWidget";
+import dynamic from "next/dynamic";
 import { ClerkProvider, SignInButton, SignUpButton, Show, UserButton } from "@clerk/nextjs";
 import { dark } from "@clerk/themes";
+
+// Lazy load ChatWidget — it's client-side only and not needed for initial render
+const ChatWidget = dynamic(() => import("@/components/ChatWidget"), {
+  ssr: false,
+  loading: () => null,
+});
 
 
 
