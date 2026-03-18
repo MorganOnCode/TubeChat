@@ -160,10 +160,22 @@ export default function AskPage() {
         setQuestion("");
 
         try {
+            // Build conversation history for context
+            const conversationMessages = [
+                ...history.flatMap(h => [
+                    { role: 'user' as const, content: h.question },
+                    { role: 'assistant' as const, content: h.result.answer },
+                ]),
+                ...(result ? [
+                    { role: 'user' as const, content: activeQuestion },
+                    { role: 'assistant' as const, content: result.answer },
+                ] : []),
+            ];
+
             const res = await fetch('/api/ask', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ question: submittedQuestion }),
+                body: JSON.stringify({ question: submittedQuestion, history: conversationMessages }),
             });
 
             if (!res.ok) {
