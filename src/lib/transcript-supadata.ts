@@ -78,9 +78,9 @@ function parseSupadataResponse(data: any, videoId: string): SupadataResult | nul
     return null;
 }
 
-async function pollSupadataJob(jobId: string, apiKey: string, videoId: string, maxAttempts: number = 10): Promise<SupadataResult | null> {
+async function pollSupadataJob(jobId: string, apiKey: string, videoId: string, maxAttempts: number = 30): Promise<SupadataResult | null> {
     for (let i = 0; i < maxAttempts; i++) {
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        await new Promise(resolve => setTimeout(resolve, 10000));
         const res = await fetch(`https://api.supadata.ai/v1/transcript/${jobId}`, {
             headers: { 'x-api-key': apiKey },
         });

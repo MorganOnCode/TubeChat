@@ -1,0 +1,16 @@
+{
+  "lastRun": "2026-03-19T05:00:56.073Z",
+  "supadataCreditsUsed": 2,
+  "billingCycleStart": "2026-03-11T00:00:00.000Z",
+  "videosProcessedToday": 2,
+  "todayDate": "2026-03-19",
+  "backlog": [],
+  "history": [
+    {
+      "date": "2026-03-19",
+      "processed": 4,
+      "supadataUsed": 2,
+      "errors": 1
+    }
+  ]
+}
