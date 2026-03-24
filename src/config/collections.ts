@@ -30,6 +30,8 @@ export const COLLECTIONS: CollectionConfig[] = [
             { url: 'https://www.youtube.com/@TheDreamlandMotel' },
             { url: 'https://www.youtube.com/@VETTEDPODCAST' },
             { url: 'https://www.youtube.com/@bledsoesaidsoprojects' },
+            { url: 'https://www.youtube.com/@thelandofchem' },
+            { url: 'https://www.youtube.com/@UnchartedX' },
         ],
     },
 ];
