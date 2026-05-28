@@ -9,7 +9,8 @@
     "lint": "eslint",
     "ingest": "tsx src/scripts/ingest.ts",
     "enrich": "tsx src/scripts/enrich.ts",
-    "generate-embeddings": "tsx src/scripts/generate-embeddings.ts"
+    "generate-embeddings": "tsx src/scripts/generate-embeddings.ts",
+    "sync": "bash scripts/sync.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
