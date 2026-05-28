@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { createBrowserClient, type VideoWithDetails, type Tag } from "@/lib/supabase";
+import { sql, getVideos, type VideoWithDetails, type Tag } from "@/lib/db";
 import { Metadata } from "next";
 
 export const revalidate = 300;
@@ -21,82 +21,39 @@ interface ChannelData {
 }
 
 async function getChannelBySlug(slug: string): Promise<ChannelData | null> {
-    const supabase = createBrowserClient();
-    const { data, error } = await supabase
-        .from('channels')
-        .select('*')
-        .eq('slug', slug)
-        .single();
-
-    if (error || !data) return null;
-    return data;
+    const rows = await sql<ChannelData[]>`SELECT * FROM channels WHERE slug = ${slug} LIMIT 1`;
+    return rows[0] ?? null;
 }
 
 async function getChannelVideos(channelId: string, page: number = 1, perPage: number = 24): Promise<{ videos: VideoWithDetails[]; total: number }> {
-    const supabase = createBrowserClient();
-    const offset = (page - 1) * perPage;
-
-    const { count } = await supabase
-        .from('videos')
-        .select('id', { count: 'exact', head: true })
-        .eq('channel_id', channelId)
-        .eq('status', 'completed');
-
-    const { data, error } = await supabase
-        .from('videos')
-        .select(`
-            *,
-            channel:channels(*),
-            transcript:transcripts(summary),
-            tags:video_tags(tag:tags(*))
-        `)
-        .eq('channel_id', channelId)
-        .eq('status', 'completed')
-        .order('published_at', { ascending: false })
-        .range(offset, offset + perPage - 1);
-
-    if (error) return { videos: [], total: 0 };
-
-    const videos = (data || []).map((v: any) => ({
-        ...v,
-        tags: v.tags?.map((vt: { tag: Tag }) => vt.tag) || [],
-    }));
-
-    return { videos, total: count || 0 };
+    try {
+        const offset = (page - 1) * perPage;
+        const [{ total }] = await sql<{ total: number }[]>`
+            SELECT COUNT(*)::int AS total FROM videos
+            WHERE channel_id = ${channelId} AND status = 'completed'
+        `;
+        const videos = await getVideos({ channelId, limit: perPage, offset });
+        return { videos, total };
+    } catch {
+        return { videos: [], total: 0 };
+    }
 }
 
 async function getChannelTags(channelId: string): Promise<{ name: string; count: number }[]> {
-    const supabase = createBrowserClient();
-
-    // Get all video IDs for this channel
-    const { data: vids } = await supabase
-        .from('videos')
-        .select('id')
-        .eq('channel_id', channelId)
-        .eq('status', 'completed');
-
-    if (!vids || vids.length === 0) return [];
-    const videoIds = vids.map(v => v.id);
-
-    // Get tags for those videos
-    const { data: videoTags } = await supabase
-        .from('video_tags')
-        .select('tag:tags(name)')
-        .in('video_id', videoIds);
-
-    if (!videoTags) return [];
-
-    // Count occurrences
-    const counts: Record<string, number> = {};
-    for (const vt of videoTags) {
-        const name = (vt as any).tag?.name;
-        if (name) counts[name] = (counts[name] || 0) + 1;
+    try {
+        return await sql<{ name: string; count: number }[]>`
+            SELECT tg.name, COUNT(*)::int AS count
+            FROM videos v
+            JOIN video_tags vt ON vt.video_id = v.id
+            JOIN tags tg ON tg.id = vt.tag_id
+            WHERE v.channel_id = ${channelId} AND v.status = 'completed'
+            GROUP BY tg.name
+            ORDER BY count DESC
+            LIMIT 20
+        `;
+    } catch {
+        return [];
     }
-
-    return Object.entries(counts)
-        .map(([name, count]) => ({ name, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 20);
 }
 
 export async function generateMetadata({ params }: PageProps): Promise<Metadata> {

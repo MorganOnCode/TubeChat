@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { createBrowserClient } from "@/lib/supabase";
+import { sql } from "@/lib/db";
 import { Metadata } from "next";
 
 export const revalidate = 300;
@@ -17,47 +17,25 @@ interface TopicWithCount {
 }
 
 async function getTopics(): Promise<TopicWithCount[]> {
-    const supabase = createBrowserClient();
-
-    // Get all tags with their video associations
-    const { data: tags } = await supabase
-        .from('tags')
-        .select('id, name')
-        .order('name');
-
-    if (!tags || tags.length === 0) return [];
-
-    // For each tag, get video count and unique channels
-    const topics = await Promise.all(
-        tags.map(async (tag) => {
-            const { data: videoTags } = await supabase
-                .from('video_tags')
-                .select('video:videos!inner(id, channel:channels(name))')
-                .eq('tag_id', tag.id)
-                .eq('video.status', 'completed');
-
-            const channels = new Set<string>();
-            let videoCount = 0;
-
-            for (const vt of videoTags || []) {
-                videoCount++;
-                const channelName = (vt as any).video?.channel?.name;
-                if (channelName) channels.add(channelName);
-            }
-
-            return {
-                id: tag.id,
-                name: tag.name,
-                videoCount,
-                channels: Array.from(channels),
-            };
-        })
-    );
-
-    // Filter out tags with < 2 videos and sort by video count
-    return topics
-        .filter(t => t.videoCount >= 2)
-        .sort((a, b) => b.videoCount - a.videoCount);
+    try {
+        return await sql<TopicWithCount[]>`
+            SELECT
+                tg.id,
+                tg.name,
+                COUNT(DISTINCT v.id)::int AS "videoCount",
+                COALESCE(array_agg(DISTINCT c.name) FILTER (WHERE c.name IS NOT NULL), '{}') AS channels
+            FROM tags tg
+            JOIN video_tags vt ON vt.tag_id = tg.id
+            JOIN videos v ON v.id = vt.video_id AND v.status = 'completed'
+            LEFT JOIN channels c ON c.id = v.channel_id
+            GROUP BY tg.id, tg.name
+            HAVING COUNT(DISTINCT v.id) >= 2
+            ORDER BY "videoCount" DESC
+        `;
+    } catch (error) {
+        console.error("Failed to fetch topics:", error);
+        return [];
+    }
 }
 
 export default async function TopicsPage() {

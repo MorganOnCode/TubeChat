@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { sql } from '@/lib/db';
 import { getChannel, getChannelVideos, getVideo, parseDuration } from '@/lib/youtube';
 import { fetchTranscript } from '@/lib/transcript';
 import { processTranscript } from '@/lib/llm';
@@ -8,25 +8,22 @@ import { COLLECTIONS } from '@/config/collections';
 
 /**
  * Ingestion API endpoint
- * 
+ *
  * Modes:
  *   GET /api/cron/ingest                     — ingest all collections (limit 3 per channel)
  *   GET /api/cron/ingest?collection=ufo      — ingest specific collection
  *   GET /api/cron/ingest?channel=@handle      — ingest specific channel
  *   GET /api/cron/ingest?limit=5             — control videos per channel
  *   GET /api/cron/ingest?skip-llm=true       — skip LLM processing
- * 
- * Security: Requires CRON_SECRET header or query param
+ *
+ * Security: Requires CRON_SECRET header or query param.
+ *
+ * NOTE: On the self-hosted VPS, YouTube blocks the datacenter IP for transcript
+ * fetching — run ingestion from a residential IP (the laptop) via the scripts in
+ * src/scripts instead. This route is retained for parity / proxy use.
  */
 
-export const maxDuration = 300; // 5 minutes max for Vercel
-
-function getSupabase() {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (!url || !key) throw new Error('Missing Supabase environment variables');
-    return createClient(url, key);
-}
+export const maxDuration = 300;
 
 function verifyCronSecret(request: NextRequest): boolean {
     const secret = process.env.CRON_SECRET;
@@ -36,100 +33,73 @@ function verifyCronSecret(request: NextRequest): boolean {
     return headerSecret === secret || querySecret === secret;
 }
 
-async function ensureChannel(supabase: ReturnType<typeof getSupabase>, ytChannelId: string) {
-    const { data: existing } = await supabase
-        .from('channels')
-        .select('*')
-        .eq('youtube_id', ytChannelId)
-        .single();
+interface ChannelRow { id: string; name: string }
 
-    if (existing) return existing;
+async function ensureChannel(ytChannelId: string): Promise<ChannelRow> {
+    const existing = await sql<ChannelRow[]>`
+        SELECT id, name FROM channels WHERE youtube_id = ${ytChannelId} LIMIT 1
+    `;
+    if (existing.length) return existing[0];
 
     const channelInfo = await getChannel(ytChannelId);
     if (!channelInfo) throw new Error(`Channel not found: ${ytChannelId}`);
 
     const slug = generateSlug(channelInfo.title);
-    const { data: newChannel, error } = await supabase
-        .from('channels')
-        .insert({
-            youtube_id: channelInfo.id,
-            name: channelInfo.title,
-            slug,
-            description: channelInfo.description,
-            thumbnail_url: channelInfo.thumbnailUrl,
-            subscriber_count: channelInfo.subscriberCount,
-            video_count: channelInfo.videoCount,
-        })
-        .select()
-        .single();
-
-    if (error) throw error;
+    const [newChannel] = await sql<ChannelRow[]>`
+        INSERT INTO channels (youtube_id, name, slug, description, thumbnail_url, subscriber_count, video_count)
+        VALUES (
+            ${channelInfo.id}, ${channelInfo.title}, ${slug}, ${channelInfo.description ?? null},
+            ${channelInfo.thumbnailUrl ?? null}, ${channelInfo.subscriberCount ?? null}, ${channelInfo.videoCount ?? null}
+        )
+        RETURNING id, name
+    `;
     return newChannel;
 }
 
-async function linkChannelToCollection(
-    supabase: ReturnType<typeof getSupabase>,
-    channelDbId: string,
-    collSlug: string
-) {
-    const { data: collection } = await supabase
-        .from('collections')
-        .select('id')
-        .eq('slug', collSlug)
-        .single();
-
-    if (!collection) return;
-    await supabase
-        .from('channel_collections')
-        .upsert({ channel_id: channelDbId, collection_id: collection.id });
+async function linkChannelToCollection(channelDbId: string, collSlug: string) {
+    const coll = await sql<{ id: string }[]>`SELECT id FROM collections WHERE slug = ${collSlug} LIMIT 1`;
+    if (!coll.length) return;
+    await sql`
+        INSERT INTO channel_collections (channel_id, collection_id)
+        VALUES (${channelDbId}, ${coll[0].id})
+        ON CONFLICT DO NOTHING
+    `;
 }
 
 async function ingestVideo(
-    supabase: ReturnType<typeof getSupabase>,
     channelDbId: string,
     ytVideoId: string,
     skipLlm: boolean
 ): Promise<{ success?: boolean; skipped?: boolean; failed?: boolean; error?: string }> {
-    const { data: existing } = await supabase
-        .from('videos')
-        .select('id, status')
-        .eq('youtube_id', ytVideoId)
-        .single();
-
-    if (existing?.status === 'completed') return { skipped: true };
+    const existing = await sql<{ id: string; status: string }[]>`
+        SELECT id, status FROM videos WHERE youtube_id = ${ytVideoId} LIMIT 1
+    `;
+    if (existing[0]?.status === 'completed') return { skipped: true };
 
     const videoInfo = await getVideo(ytVideoId);
     if (!videoInfo) return { failed: true, error: 'Video not found' };
 
     let videoDbId: string;
-    if (existing) {
-        videoDbId = existing.id;
-        await supabase.from('videos').update({ status: 'processing' }).eq('id', videoDbId);
+    if (existing.length) {
+        videoDbId = existing[0].id;
+        await sql`UPDATE videos SET status = 'processing' WHERE id = ${videoDbId}`;
     } else {
-        const { data: newVideo, error } = await supabase
-            .from('videos')
-            .insert({
-                channel_id: channelDbId,
-                youtube_id: videoInfo.id,
-                title: videoInfo.title,
-                description: videoInfo.description,
-                published_at: videoInfo.publishedAt,
-                duration_seconds: parseDuration(videoInfo.duration),
-                thumbnail_url: videoInfo.thumbnailUrl,
-                view_count: videoInfo.viewCount,
-                status: 'processing',
-            })
-            .select()
-            .single();
-
-        if (error) throw error;
+        const [newVideo] = await sql<{ id: string }[]>`
+            INSERT INTO videos (channel_id, youtube_id, title, description, published_at, duration_seconds, thumbnail_url, view_count, status)
+            VALUES (
+                ${channelDbId}, ${videoInfo.id}, ${videoInfo.title}, ${videoInfo.description ?? null},
+                ${videoInfo.publishedAt ?? null}, ${parseDuration(videoInfo.duration)},
+                ${videoInfo.thumbnailUrl ?? null}, ${videoInfo.viewCount ?? null}, 'processing'
+            )
+            RETURNING id
+        `;
         videoDbId = newVideo.id;
     }
 
     try {
         const transcriptResult = await fetchTranscript(ytVideoId);
         if (!transcriptResult) {
-            await supabase.from('videos').update({ status: 'failed' }).eq('id', videoDbId);
+            await sql`UPDATE videos SET status = 'failed' WHERE id = ${videoDbId}`;
             return { failed: true, error: 'No transcript available' };
         }
 
@@ -148,30 +118,37 @@ async function ingestVideo(
             }
         }
 
-        await supabase.from('transcripts').upsert({
-            video_id: videoDbId,
-            raw_text: transcriptResult.text,
-            cleaned_text: cleanedText,
-            summary: summary || null,
-            source: transcriptResult.source,
-            processing_status: 'completed',
-        });
+        await sql`
+            INSERT INTO transcripts (video_id, raw_text, cleaned_text, summary, source, processing_status)
+            VALUES (${videoDbId}, ${transcriptResult.text}, ${cleanedText}, ${summary || null}, ${transcriptResult.source}, 'completed')
+            ON CONFLICT (video_id) DO UPDATE SET
+                raw_text = EXCLUDED.raw_text,
+                cleaned_text = EXCLUDED.cleaned_text,
+                summary = EXCLUDED.summary,
+                source = EXCLUDED.source,
+                processing_status = 'completed',
+                updated_at = now()
+        `;
 
         for (const tagName of tags) {
-            const { data: tag } = await supabase
-                .from('tags')
-                .upsert({ name: tagName.toLowerCase() }, { onConflict: 'name' })
-                .select()
-                .single();
+            const [tag] = await sql<{ id: string }[]>`
+                INSERT INTO tags (name) VALUES (${tagName.toLowerCase()})
+                ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+                RETURNING id
+            `;
             if (tag) {
-                await supabase.from('video_tags').upsert({ video_id: videoDbId, tag_id: tag.id });
+                await sql`
+                    INSERT INTO video_tags (video_id, tag_id)
+                    VALUES (${videoDbId}, ${tag.id})
+                    ON CONFLICT DO NOTHING
+                `;
             }
         }
 
-        await supabase.from('videos').update({ status: 'completed' }).eq('id', videoDbId);
+        await sql`UPDATE videos SET status = 'completed' WHERE id = ${videoDbId}`;
         return { success: true };
     } catch (error) {
-        await supabase.from('videos').update({ status: 'failed' }).eq('id', videoDbId);
+        await sql`UPDATE videos SET status = 'failed' WHERE id = ${videoDbId}`;
         return { failed: true, error: String(error) };
     }
 }
@@ -186,11 +163,9 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(request.nextUrl.searchParams.get('limit') || '3', 10);
     const skipLlm = request.nextUrl.searchParams.get('skip-llm') === 'true';
 
-    const supabase = getSupabase();
     const results = { processed: 0, skipped: 0, failed: 0, errors: [] as string[], channels: [] as string[] };
 
     try {
-        // Determine which channels to process
         let channelUrls: { url: string; collSlug?: string }[] = [];
 
         if (channelInput) {
@@ -216,17 +191,17 @@ export async function GET(request: NextRequest) {
                     continue;
                 }
 
-                const channel = await ensureChannel(supabase, channelId);
+                const channel = await ensureChannel(channelId);
                 results.channels.push(channel.name);
 
                 if (collSlug) {
-                    await linkChannelToCollection(supabase, channel.id, collSlug);
+                    await linkChannelToCollection(channel.id, collSlug);
                 }
 
                 const { videos } = await getChannelVideos(channelId, { maxResults: limit });
 
                 for (const video of videos.slice(0, limit)) {
-                    const result = await ingestVideo(supabase, channel.id, video.id, skipLlm);
+                    const result = await ingestVideo(channel.id, video.id, skipLlm);
                     if (result.success) results.processed++;
                     else if (result.skipped) results.skipped++;
                     else {

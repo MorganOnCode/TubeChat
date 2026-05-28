@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { createBrowserClient } from "@/lib/supabase";
+import { sql } from "@/lib/db";
 import { Metadata } from "next";
 
 export const revalidate = 300;
@@ -22,33 +22,19 @@ interface ChannelWithStats {
 
 async function getChannels(): Promise<ChannelWithStats[]> {
     try {
-        const supabase = createBrowserClient();
-
-        const { data: channels, error } = await supabase
-            .from('channels')
-            .select('*')
-            .order('name');
-
-        if (error) throw error;
-
-        // Get video counts per channel
-        const channelsWithCounts = await Promise.all(
-            (channels || []).map(async (channel) => {
-                const { count } = await supabase
-                    .from('videos')
-                    .select('id', { count: 'exact', head: true })
-                    .eq('channel_id', channel.id)
-                    .eq('status', 'completed');
-
-                return {
-                    ...channel,
-                    video_count: count || 0,
-                };
-            })
-        );
-
-        // Sort by video count desc
-        return channelsWithCounts.sort((a, b) => b.video_count - a.video_count);
+        return await sql<ChannelWithStats[]>`
+            SELECT
+                c.id, c.youtube_id, c.name, c.slug, c.description,
+                c.thumbnail_url, c.subscriber_count,
+                COALESCE(vc.cnt, 0)::int AS video_count
+            FROM channels c
+            LEFT JOIN (
+                SELECT channel_id, COUNT(*)::int AS cnt
+                FROM videos WHERE status = 'completed'
+                GROUP BY channel_id
+            ) vc ON vc.channel_id = c.id
+            ORDER BY video_count DESC, c.name
+        `;
     } catch (error) {
         console.error("Failed to fetch channels:", error);
         return [];

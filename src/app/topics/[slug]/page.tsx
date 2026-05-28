@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { createBrowserClient, type Tag } from "@/lib/supabase";
+import { sql, type Tag } from "@/lib/db";
 import { Metadata } from "next";
 
 export const revalidate = 300;
@@ -27,43 +27,40 @@ function slugToName(slug: string): string {
 }
 
 async function getTopicData(slug: string): Promise<{ tag: Tag; videos: TopicVideo[]; channels: string[] } | null> {
-    const supabase = createBrowserClient();
     const name = slugToName(slug);
 
     // Find the tag (case insensitive)
-    const { data: tags } = await supabase
-        .from('tags')
-        .select('*')
-        .ilike('name', name);
-
-    if (!tags || tags.length === 0) return null;
+    const tags = await sql<Tag[]>`SELECT * FROM tags WHERE name ILIKE ${name} LIMIT 1`;
+    if (tags.length === 0) return null;
     const tag = tags[0];
 
-    // Get all videos with this tag
-    const { data: videoTags } = await supabase
-        .from('video_tags')
-        .select(`
-            video:videos!inner(
-                id, youtube_id, title, published_at, duration_seconds, thumbnail_url,
-                channel:channels(name, slug),
-                transcript:transcripts(summary, cleaned_text)
-            )
-        `)
-        .eq('tag_id', tag.id)
-        .eq('video.status', 'completed');
-
-    if (!videoTags) return { tag, videos: [], channels: [] };
+    // Get all completed videos carrying this tag, with channel + transcript
+    const rows = await sql<{
+        id: string; youtube_id: string; title: string;
+        published_at: string | null; duration_seconds: number | null; thumbnail_url: string | null;
+        channel_name: string | null; channel_slug: string | null;
+        summary: string | null; cleaned_text: string | null;
+    }[]>`
+        SELECT
+            v.id, v.youtube_id, v.title, v.published_at, v.duration_seconds, v.thumbnail_url,
+            c.name AS channel_name, c.slug AS channel_slug,
+            t.summary AS summary, t.cleaned_text AS cleaned_text
+        FROM video_tags vt
+        JOIN videos v ON v.id = vt.video_id AND v.status = 'completed'
+        LEFT JOIN channels c ON c.id = v.channel_id
+        LEFT JOIN transcripts t ON t.video_id = v.id
+        WHERE vt.tag_id = ${tag.id}
+    `;
 
     const channelSet = new Set<string>();
-    const videos: TopicVideo[] = videoTags.map((vt: any) => {
-        const v = vt.video;
-        const channelName = v.channel?.name || 'Unknown';
-        const channelSlug = v.channel?.slug || '';
+    const videos: TopicVideo[] = rows.map((v) => {
+        const channelName = v.channel_name || 'Unknown';
+        const channelSlug = v.channel_slug || '';
         channelSet.add(channelName);
 
         // Extract a snippet mentioning the topic from the transcript
         let snippet: string | null = null;
-        const text = v.transcript?.cleaned_text || '';
+        const text = v.cleaned_text || '';
         if (text) {
             const lower = text.toLowerCase();
             const idx = lower.indexOf(name.toLowerCase());
@@ -83,7 +80,7 @@ async function getTopicData(slug: string): Promise<{ tag: Tag; videos: TopicVide
             thumbnail_url: v.thumbnail_url,
             channel_name: channelName,
             channel_slug: channelSlug,
-            summary: v.transcript?.summary?.split('\n')[0]?.replace(/^• /, '') || null,
+            summary: v.summary?.split('\n')[0]?.replace(/^• /, '') || null,
             snippet,
         };
     });

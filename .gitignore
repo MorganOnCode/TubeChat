@@ -8,6 +8,7 @@ node_modules/
 # Local data (not for Vercel)
 data/
 backup/
+backups/
 obsidian-vault/
 obsidian-vault.tar.gz
 scripts/enrichment.log

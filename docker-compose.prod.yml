@@ -1,0 +1,97 @@
+# tubechat production stack — self-hosted on VPS.
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# App bound to 127.0.0.1 only (cloudflared tunnels traffic in). Postgres bound
+# to host loopback 5433 (so laptop ingestion can tunnel `ssh -L 5433:127.0.0.1:5433`).
+# Ports: web 3002 (cardano402=3000, hosksaid=3001), postgres 5433 (hosksaid=5432).
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: tubechat-postgres
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-tubechat}
+      POSTGRES_USER: ${POSTGRES_USER:-tubechat}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Runs once on a fresh data volume. Re-apply by hand with:
+      # docker compose -f docker-compose.prod.yml exec -T postgres psql -U tubechat -d tubechat < docker/init-db.sql
+      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-tubechat} -d ${POSTGRES_DB:-tubechat}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    mem_limit: 1g
+    cpus: 1.0
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: tubechat:latest
+    container_name: tubechat-web
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3002:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-tubechat}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tubechat}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?OPENAI_API_KEY must be set in .env}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      SUPADATA_API_KEY: ${SUPADATA_API_KEY:-}
+      CRON_SECRET: ${CRON_SECRET:-}
+      NEXT_TELEMETRY_DISABLED: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    mem_limit: 768m
+    cpus: 1.0
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # Manual ingestion runner. NOT auto-scheduled: YouTube blocks this VPS's
+  # datacenter IP, so ingestion runs from a residential IP (laptop) instead.
+  # Kept for the residential-proxy / cookies case. Invoke manually, e.g.:
+  #   docker compose -f docker-compose.prod.yml --profile scheduler \
+  #     run --rm scheduler npx tsx src/scripts/ingest.ts --collection=ufo --limit=10
+  scheduler:
+    image: tubechat:latest
+    container_name: tubechat-scheduler
+    profiles: ["scheduler"]
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://${POSTGRES_USER:-tubechat}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-tubechat}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
+      SUPADATA_API_KEY: ${SUPADATA_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      echo "Override the command to run a specific script, e.g. npx tsx src/scripts/ingest.ts --limit=10"
+
+volumes:
+  postgres_data:

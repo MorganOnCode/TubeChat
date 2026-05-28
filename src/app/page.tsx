@@ -1,12 +1,20 @@
 import Link from "next/link";
-import { createBrowserClient, getVideos, getAllTags, type VideoWithDetails, type Tag } from "@/lib/supabase";
+import { sql, getVideos, getAllTags, type VideoWithDetails, type Tag } from "@/lib/db";
 
 export const revalidate = 300;
 
+interface ChannelCard {
+  id: string;
+  name: string;
+  slug: string | null;
+  thumbnail_url: string | null;
+  subscriber_count: number | null;
+  description: string | null;
+}
+
 async function getLatestVideos(): Promise<VideoWithDetails[]> {
   try {
-    const supabase = createBrowserClient();
-    return await getVideos(supabase, { limit: 8 });
+    return await getVideos({ limit: 8 });
   } catch (error) {
     console.error("Failed to fetch videos:", error);
     return [];
@@ -15,8 +23,7 @@ async function getLatestVideos(): Promise<VideoWithDetails[]> {
 
 async function getTags(): Promise<Tag[]> {
   try {
-    const supabase = createBrowserClient();
-    return await getAllTags(supabase);
+    return await getAllTags();
   } catch (error) {
     console.error("Failed to fetch tags:", error);
     return [];
@@ -25,26 +32,25 @@ async function getTags(): Promise<Tag[]> {
 
 async function getStats(): Promise<{ videos: number; channels: number; chunks: number }> {
   try {
-    const supabase = createBrowserClient();
-    const [{ count: videos }, { count: channels }, { count: chunks }] = await Promise.all([
-      supabase.from('videos').select('id', { count: 'exact', head: true }).eq('status', 'completed'),
-      supabase.from('channels').select('id', { count: 'exact', head: true }),
-      supabase.from('transcript_chunks').select('id', { count: 'exact', head: true }),
-    ]);
-    return { videos: videos || 0, channels: channels || 0, chunks: chunks || 0 };
+    const [row] = await sql<{ videos: number; channels: number; chunks: number }[]>`
+      SELECT
+        (SELECT COUNT(*)::int FROM videos WHERE status = 'completed') AS videos,
+        (SELECT COUNT(*)::int FROM channels) AS channels,
+        (SELECT COUNT(*)::int FROM transcript_chunks) AS chunks
+    `;
+    return { videos: row?.videos || 0, channels: row?.channels || 0, chunks: row?.chunks || 0 };
   } catch {
     return { videos: 0, channels: 0, chunks: 0 };
   }
 }
 
-async function getChannelsWithThumbnails() {
+async function getChannelsWithThumbnails(): Promise<ChannelCard[]> {
   try {
-    const supabase = createBrowserClient();
-    const { data } = await supabase
-      .from('channels')
-      .select('id, name, slug, thumbnail_url, subscriber_count, description')
-      .order('subscriber_count', { ascending: false, nullsFirst: false });
-    return data || [];
+    return await sql<ChannelCard[]>`
+      SELECT id, name, slug, thumbnail_url, subscriber_count, description
+      FROM channels
+      ORDER BY subscriber_count DESC NULLS LAST
+    `;
   } catch {
     return [];
   }

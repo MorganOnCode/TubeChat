@@ -1,21 +1,9 @@
-import { createClient } from '@supabase/supabase-js';
 import { config } from 'dotenv';
-import { generateEmbedding } from '../lib/llm';
-
 config();
 
-// Initialize Supabase
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+import { sql, toVectorLiteral } from '../lib/db';
+import { generateEmbedding } from '../lib/llm';
 
-if (!supabaseUrl || !supabaseServiceKey) {
-    console.error('❌ Missing Supabase environment variables');
-    process.exit(1);
-}
-
-const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-// Chunking Configuration
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 100;
 
@@ -27,26 +15,18 @@ function getArg(name: string): string | null {
 function splitText(text: string): string[] {
     const chunks: string[] = [];
     if (!text) return chunks;
-
-    // Normalize
     const normalized = text.replace(/\s+/g, ' ').trim();
 
     let start = 0;
     while (start < normalized.length) {
         let end = start + CHUNK_SIZE;
-
-        // Try to find a sentence boundary near the end if possible
         if (end < normalized.length) {
             const boundary = normalized.slice(start, end + 50).lastIndexOf('.');
-            if (boundary > CHUNK_SIZE * 0.8) {
-                end = start + boundary + 1;
-            }
+            if (boundary > CHUNK_SIZE * 0.8) end = start + boundary + 1;
         }
-
         chunks.push(normalized.slice(start, end).trim());
-        start = end - CHUNK_OVERLAP; // Move forward with overlap
+        start = end - CHUNK_OVERLAP;
     }
-
     return chunks;
 }
 
@@ -56,90 +36,55 @@ async function generateEmbeddings() {
 
     console.log(`🧠 Generating Semantic Embeddings (Limit: ${limit})...`);
 
-    // 1. Get all videos that have transcripts
-    let query = supabase
-        .from('videos')
-        .select(`
-            id,
-            title,
-            transcript:transcripts(id, cleaned_text, raw_text)
-        `)
-        .eq('status', 'completed');
+    // Completed videos that have a transcript but no chunks yet.
+    const videos = await sql<{ id: string; title: string; cleaned_text: string | null; raw_text: string | null }[]>`
+        SELECT v.id, v.title, t.cleaned_text, t.raw_text
+        FROM videos v
+        JOIN transcripts t ON t.video_id = v.id
+        WHERE v.status = 'completed'
+          AND NOT EXISTS (SELECT 1 FROM transcript_chunks tc WHERE tc.video_id = v.id)
+          ${videoIdArg ? sql`AND v.id = ${videoIdArg}` : sql``}
+        LIMIT ${limit}
+    `;
 
-    if (videoIdArg) {
-        query = query.eq('id', videoIdArg);
-    }
-
-    // We fetch a batch. Note: Filtering by "transcripts exist" implicitly happens by the join structure if using !inner,
-    // but here we just iterate.
-    const { data: videos, error } = await query.limit(limit);
-
-    if (error) {
-        console.error('❌ Error fetching videos:', error);
-        return;
-    }
-
-    console.log(`Found ${videos?.length || 0} videos to check/process.`);
+    console.log(`Found ${videos.length} videos to process.`);
     let processedCount = 0;
 
-    for (const video of videos || []) {
-        // Check if chunks already exist
-        const { count } = await supabase
-            .from('transcript_chunks')
-            .select('id', { count: 'exact', head: true })
-            .eq('video_id', video.id);
-
-        if (count && count > 0) {
-            // Already processed
-            continue;
-        }
-
-        // Needs embeddings
-        const transcript = video.transcript;
-        // @ts-ignore
-        const textToChunk = transcript?.cleaned_text || transcript?.raw_text;
-
+    for (const video of videos) {
+        const textToChunk = video.cleaned_text || video.raw_text;
         if (!textToChunk) {
             console.log(`   ⚠️  No text found for video: ${video.title}`);
             continue;
         }
 
         console.log(`   🎬 Processing: ${video.title} (${textToChunk.length} chars)`);
-
         const chunks = splitText(textToChunk);
         console.log(`      Generated ${chunks.length} chunks.`);
 
-        const chunkRecords = [];
-
-        for (const chunkContent of chunks) {
+        let inserted = 0;
+        for (const content of chunks) {
             try {
-                const embedding = await generateEmbedding(chunkContent);
-                chunkRecords.push({
-                    video_id: video.id,
-                    content: chunkContent,
-                    embedding: embedding
-                });
-
-                // Rate limit slightly? OpenAI is fast.
+                const embedding = await generateEmbedding(content);
+                if (!embedding.length) continue;
+                await sql`
+                    INSERT INTO transcript_chunks (video_id, content, embedding)
+                    VALUES (${video.id}, ${content}, ${toVectorLiteral(embedding)}::vector)
+                `;
+                inserted++;
             } catch (e) {
                 console.error('      Embedding failed:', e);
             }
         }
 
-        if (chunkRecords.length > 0) {
-            const { error: insertError } = await supabase
-                .from('transcript_chunks')
-                .insert(chunkRecords);
-
-            if (insertError) console.error('      Failed to insert chunks:', insertError);
-            else {
-                processedCount++;
-                console.log('      ✅ Chunks saved.');
-            }
+        if (inserted > 0) {
+            processedCount++;
+            console.log(`      ✅ ${inserted} chunks saved.`);
         }
     }
 
     console.log(`\n✅ Finished embedding generation. New videos processed: ${processedCount}`);
 }
 
-generateEmbeddings();
+generateEmbeddings()
+    .catch((e) => { console.error('Fatal error:', e); process.exitCode = 1; })
+    .finally(() => sql.end());

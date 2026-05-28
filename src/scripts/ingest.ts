@@ -1,7 +1,8 @@
 #!/usr/bin/env npx tsx
 /**
- * Creator FAQ — Ingestion Script
- * 
+ * tubechat — Ingestion Script (run from a residential IP / laptop; YouTube
+ * blocks the VPS datacenter IP). Talks to Postgres via DATABASE_URL.
+ *
  * Usage:
  *   npx tsx src/scripts/ingest.ts --channel=UCxxxx
  *   npx tsx src/scripts/ingest.ts --channel=https://www.youtube.com/@Handle
@@ -10,7 +11,10 @@
  *   npx tsx src/scripts/ingest.ts --channel=UCxxxx --limit=10 --skip-llm
  */
 
-import { createClient } from '@supabase/supabase-js';
+import { config } from 'dotenv';
+config();
+
+import { sql } from '../lib/db';
 import { getChannel, getChannelVideos, getVideo, parseDuration } from '../lib/youtube';
 import { fetchTranscript } from '../lib/transcript';
 import { transcribeWithWhisper } from '../lib/whisper';
@@ -18,10 +22,6 @@ import { processTranscript } from '../lib/llm';
 import { resolveChannelId, generateSlug } from '../lib/channel-resolver';
 import { COLLECTIONS } from '../config/collections';
 
-import { config } from 'dotenv';
-config();
-
-// Parse args
 const args = process.argv.slice(2);
 const getArg = (name: string): string | undefined => {
     const arg = args.find((a) => a.startsWith(`--${name}=`));
@@ -45,23 +45,13 @@ if (!channelInput && !videoId && !collectionSlug) {
     process.exit(1);
 }
 
-function getSupabase() {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-    if (!url || !key) throw new Error('Missing Supabase environment variables');
-    return createClient(url, key);
-}
+interface ChannelRow { id: string; name: string }
 
-async function ensureChannel(supabase: ReturnType<typeof getSupabase>, ytChannelId: string) {
-    const { data: existing } = await supabase
-        .from('channels')
-        .select('*')
-        .eq('youtube_id', ytChannelId)
-        .single();
-
-    if (existing) {
-        console.log(`📺 Using existing channel: ${existing.name}`);
-        return existing;
+async function ensureChannel(ytChannelId: string): Promise<ChannelRow> {
+    const existing = await sql<ChannelRow[]>`SELECT id, name FROM channels WHERE youtube_id = ${ytChannelId} LIMIT 1`;
+    if (existing.length) {
+        console.log(`📺 Using existing channel: ${existing[0].name}`);
+        return existing[0];
     }
 
     console.log(`📺 Fetching channel info for ${ytChannelId}...`);
@@ -69,65 +59,34 @@ async function ensureChannel(supabase: ReturnType<typeof getSupabase>, ytChannel
     if (!channelInfo) throw new Error(`Channel not found: ${ytChannelId}`);
 
     const slug = generateSlug(channelInfo.title);
-
-    const { data: newChannel, error } = await supabase
-        .from('channels')
-        .insert({
-            youtube_id: channelInfo.id,
-            name: channelInfo.title,
-            slug,
-            description: channelInfo.description,
-            thumbnail_url: channelInfo.thumbnailUrl,
-            subscriber_count: channelInfo.subscriberCount,
-            video_count: channelInfo.videoCount,
-        })
-        .select()
-        .single();
-
-    if (error) throw error;
+    const [newChannel] = await sql<ChannelRow[]>`
+        INSERT INTO channels (youtube_id, name, slug, description, thumbnail_url, subscriber_count, video_count)
+        VALUES (${channelInfo.id}, ${channelInfo.title}, ${slug}, ${channelInfo.description ?? null},
+                ${channelInfo.thumbnailUrl ?? null}, ${channelInfo.subscriberCount ?? null}, ${channelInfo.videoCount ?? null})
+        RETURNING id, name
+    `;
     console.log(`✅ Created channel: ${channelInfo.title} (slug: ${slug})`);
     return newChannel;
 }
 
-async function linkChannelToCollection(
-    supabase: ReturnType<typeof getSupabase>,
-    channelDbId: string,
-    collSlug: string
-) {
-    const { data: collection } = await supabase
-        .from('collections')
-        .select('id')
-        .eq('slug', collSlug)
-        .single();
-
-    if (!collection) {
+async function linkChannelToCollection(channelDbId: string, collSlug: string) {
+    const coll = await sql<{ id: string }[]>`SELECT id FROM collections WHERE slug = ${collSlug} LIMIT 1`;
+    if (!coll.length) {
         console.log(`⚠️  Collection "${collSlug}" not found in database`);
         return;
     }
-
-    await supabase
-        .from('channel_collections')
-        .upsert({ channel_id: channelDbId, collection_id: collection.id })
-        .select();
-
+    await sql`
+        INSERT INTO channel_collections (channel_id, collection_id)
+        VALUES (${channelDbId}, ${coll[0].id}) ON CONFLICT DO NOTHING
+    `;
     console.log(`🔗 Linked channel to collection: ${collSlug}`);
 }
 
-async function ingestVideo(
-    supabase: ReturnType<typeof getSupabase>,
-    channelDbId: string,
-    ytVideoId: string,
-    skipLlmProcessing: boolean
-) {
+async function ingestVideo(channelDbId: string, ytVideoId: string, skipLlmProcessing: boolean) {
     console.log(`\n🎬 Processing video: ${ytVideoId}`);
 
-    const { data: existing } = await supabase
-        .from('videos')
-        .select('id, status')
-        .eq('youtube_id', ytVideoId)
-        .single();
-
-    if (existing?.status === 'completed') {
+    const existing = await sql<{ id: string; status: string }[]>`SELECT id, status FROM videos WHERE youtube_id = ${ytVideoId} LIMIT 1`;
+    if (existing[0]?.status === 'completed') {
         console.log(`   ⏭️  Already processed, skipping`);
         return { skipped: true };
     }
@@ -137,36 +96,28 @@ async function ingestVideo(
         console.log(`   ❌ Video not found on YouTube`);
         return { failed: true, error: 'Video not found' };
     }
-
     console.log(`   📝 Title: ${videoInfo.title.slice(0, 60)}...`);
 
     let videoDbId: string;
-    if (existing) {
-        videoDbId = existing.id;
-        await supabase.from('videos').update({ status: 'processing' }).eq('id', videoDbId);
+    if (existing.length) {
+        videoDbId = existing[0].id;
+        await sql`UPDATE videos SET status = 'processing' WHERE id = ${videoDbId}`;
     } else {
-        const { data: newVideo, error } = await supabase
-            .from('videos')
-            .insert({
-                channel_id: channelDbId,
-                youtube_id: videoInfo.id,
-                title: videoInfo.title,
-                description: videoInfo.description,
-                published_at: videoInfo.publishedAt,
-                duration_seconds: parseDuration(videoInfo.duration),
-                thumbnail_url: videoInfo.thumbnailUrl,
-                view_count: videoInfo.viewCount,
-                status: 'processing',
-            })
-            .select()
-            .single();
-
-        if (error) throw error;
+        const [newVideo] = await sql<{ id: string }[]>`
+            INSERT INTO videos (channel_id, youtube_id, title, description, published_at, duration_seconds, thumbnail_url, view_count, status)
+            VALUES (${channelDbId}, ${videoInfo.id}, ${videoInfo.title}, ${videoInfo.description ?? null},
+                    ${videoInfo.publishedAt ?? null}, ${parseDuration(videoInfo.duration)},
+                    ${videoInfo.thumbnailUrl ?? null}, ${videoInfo.viewCount ?? null}, 'processing')
+            RETURNING id
+        `;
         videoDbId = newVideo.id;
     }
 
     const log = async (step: string, status: string, details?: object) => {
-        await supabase.from('ingestion_logs').insert({ video_id: videoDbId, step, status, details });
+        await sql`
+            INSERT INTO ingestion_logs (video_id, step, status, details)
+            VALUES (${videoDbId}, ${step}, ${status}, ${details ? JSON.stringify(details) : null}::jsonb)
+        `;
     };
 
     try {
@@ -174,16 +125,14 @@ async function ingestVideo(
         await log('fetch_transcript', 'started');
 
         let transcriptResult = await fetchTranscript(ytVideoId);
-
         if (!transcriptResult) {
             console.log(`   ⚠️  No captions. Attempting Whisper fallback...`);
             transcriptResult = await transcribeWithWhisper(ytVideoId);
         }
-
         if (!transcriptResult) {
             console.log(`   ❌ No transcript available`);
             await log('fetch_transcript', 'failed', { error: 'No transcript found' });
-            await supabase.from('videos').update({ status: 'failed' }).eq('id', videoDbId);
+            await sql`UPDATE videos SET status = 'failed' WHERE id = ${videoDbId}`;
             return { failed: true, error: 'No transcript' };
         }
 
@@ -195,9 +144,8 @@ async function ingestVideo(
         let tags: string[] = [];
 
         if (!skipLlmProcessing) {
-            console.log(`   🤖 Processing with Claude Sonnet...`);
+            console.log(`   🤖 Processing with LLM...`);
             await log('llm_processing', 'started');
-
             try {
                 const processed = await processTranscript(transcriptResult.text);
                 cleanedText = processed.cleanedText;
@@ -214,53 +162,40 @@ async function ingestVideo(
             console.log(`   ⏭️  Skipping LLM processing`);
         }
 
-        await supabase.from('transcripts').upsert({
-            video_id: videoDbId,
-            raw_text: transcriptResult.text,
-            cleaned_text: cleanedText,
-            summary: summary || null,
-            source: transcriptResult.source,
-            processing_status: 'completed',
-        });
+        await sql`
+            INSERT INTO transcripts (video_id, raw_text, cleaned_text, summary, source, processing_status)
+            VALUES (${videoDbId}, ${transcriptResult.text}, ${cleanedText}, ${summary || null}, ${transcriptResult.source}, 'completed')
+            ON CONFLICT (video_id) DO UPDATE SET
+                raw_text = EXCLUDED.raw_text, cleaned_text = EXCLUDED.cleaned_text, summary = EXCLUDED.summary,
+                source = EXCLUDED.source, processing_status = 'completed', updated_at = now()
+        `;
 
-        if (tags.length > 0) {
-            for (const tagName of tags) {
-                const { data: tag } = await supabase
-                    .from('tags')
-                    .upsert({ name: tagName.toLowerCase() }, { onConflict: 'name' })
-                    .select()
-                    .single();
-                if (tag) {
-                    await supabase.from('video_tags').upsert({ video_id: videoDbId, tag_id: tag.id });
-                }
+        for (const tagName of tags) {
+            const [tag] = await sql<{ id: string }[]>`
+                INSERT INTO tags (name) VALUES (${tagName.toLowerCase()})
+                ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name RETURNING id
+            `;
+            if (tag) {
+                await sql`INSERT INTO video_tags (video_id, tag_id) VALUES (${videoDbId}, ${tag.id}) ON CONFLICT DO NOTHING`;
             }
         }
 
-        await supabase.from('videos').update({ status: 'completed' }).eq('id', videoDbId);
+        await sql`UPDATE videos SET status = 'completed' WHERE id = ${videoDbId}`;
         console.log(`   ✅ Video processing complete!`);
         return { success: true };
-
     } catch (error) {
         console.error(`   ❌ Error processing video:`, error);
         await log('error', 'failed', { error: String(error) });
-        await supabase.from('videos').update({ status: 'failed' }).eq('id', videoDbId);
+        await sql`UPDATE videos SET status = 'failed' WHERE id = ${videoDbId}`;
         return { failed: true, error: String(error) };
     }
 }
 
-async function ingestChannel(
-    supabase: ReturnType<typeof getSupabase>,
-    ytChannelId: string,
-    collSlug?: string
-) {
-    const channel = await ensureChannel(supabase, ytChannelId);
-
-    if (collSlug) {
-        await linkChannelToCollection(supabase, channel.id, collSlug);
-    }
+async function ingestChannel(ytChannelId: string, collSlug?: string) {
+    const channel = await ensureChannel(ytChannelId);
+    if (collSlug) await linkChannelToCollection(channel.id, collSlug);
 
     console.log(`\n📥 Fetching videos from channel...`);
-
     const stats = { success: 0, skipped: 0, failed: 0 };
     let pageToken: string | undefined;
     let processedCount = 0;
@@ -274,16 +209,14 @@ async function ingestChannel(
                 console.log(`\n⏹️  Reached limit of ${limit} videos`);
                 break;
             }
-
             if (!dryRun) {
-                const ingestResult = await ingestVideo(supabase, channel.id, video.id, skipLlm);
+                const ingestResult = await ingestVideo(channel.id, video.id, skipLlm);
                 if (ingestResult.success) stats.success++;
                 else if (ingestResult.skipped) stats.skipped++;
                 else stats.failed++;
             } else {
                 console.log(`   Would process: ${video.title.slice(0, 50)}...`);
             }
-
             processedCount++;
         }
 
@@ -295,10 +228,9 @@ async function ingestChannel(
 }
 
 async function main() {
-    console.log('🚀 Creator FAQ — Ingestion Script\n');
+    console.log('🚀 tubechat — Ingestion Script\n');
     if (dryRun) console.log('🔍 DRY RUN MODE\n');
 
-    const supabase = getSupabase();
     const totalStats = { success: 0, skipped: 0, failed: 0 };
 
     if (collectionSlug) {
@@ -308,9 +240,7 @@ async function main() {
             console.error('Available:', COLLECTIONS.map(c => c.slug).join(', '));
             process.exit(1);
         }
-
         console.log(`📚 Ingesting collection: ${collection.name} (${collection.channels.length} channels)\n`);
-
         for (const ch of collection.channels) {
             try {
                 console.log(`\n${'='.repeat(60)}`);
@@ -322,8 +252,7 @@ async function main() {
                     continue;
                 }
                 console.log(`   ✅ Channel ID: ${channelId}`);
-
-                const stats = await ingestChannel(supabase, channelId, collectionSlug);
+                const stats = await ingestChannel(channelId, collectionSlug);
                 totalStats.success += stats.success;
                 totalStats.skipped += stats.skipped;
                 totalStats.failed += stats.failed;
@@ -332,7 +261,6 @@ async function main() {
                 totalStats.failed++;
             }
         }
-
     } else if (channelInput) {
         console.log(`🔍 Resolving channel: ${channelInput}`);
         const channelId = await resolveChannelId(channelInput);
@@ -341,20 +269,16 @@ async function main() {
             process.exit(1);
         }
         console.log(`✅ Channel ID: ${channelId}`);
-
-        const stats = await ingestChannel(supabase, channelId);
-        totalStats.success = stats.success;
-        totalStats.skipped = stats.skipped;
-        totalStats.failed = stats.failed;
-
+        const stats = await ingestChannel(channelId);
+        Object.assign(totalStats, stats);
     } else if (videoId) {
         const video = await getVideo(videoId);
         if (!video) {
             console.error(`Video not found: ${videoId}`);
             process.exit(1);
         }
-        const channel = await ensureChannel(supabase, video.channelId);
-        const result = await ingestVideo(supabase, channel.id, videoId, skipLlm);
+        const channel = await ensureChannel(video.channelId);
+        const result = await ingestVideo(channel.id, videoId, skipLlm);
         if (result.success) totalStats.success++;
         else if (result.skipped) totalStats.skipped++;
         else totalStats.failed++;
@@ -367,7 +291,9 @@ async function main() {
     console.log('\n✨ Done!');
 }
 
-main().catch((error) => {
-    console.error('Fatal error:', error);
-    process.exit(1);
-});
+main()
+    .catch((error) => {
+        console.error('Fatal error:', error);
+        process.exitCode = 1;
+    })
+    .finally(() => sql.end());

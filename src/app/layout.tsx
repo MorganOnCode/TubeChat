@@ -2,15 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import Link from "next/link";
-import dynamic from "next/dynamic";
-import { ClerkProvider, SignInButton, SignUpButton, Show, UserButton } from "@clerk/nextjs";
-import { dark } from "@clerk/themes";
-
-// Lazy load ChatWidget — it's client-side only and not needed for initial render
-const ChatWidget = dynamic(() => import("@/components/ChatWidget"), {
-  ssr: false,
-  loading: () => null,
-});
+import ChatWidgetLoader from "@/components/ChatWidgetLoader";
 
 
 
@@ -79,24 +71,6 @@ function Header() {
               <span className="text-xs font-medium">Ask</span>
             </Link>
 
-            <div className="ml-1 sm:ml-2 flex items-center">
-              <Show when="signed-out">
-                <SignInButton mode="modal">
-                  <button className="px-2 sm:px-3 py-1.5 text-[11px] sm:text-xs text-[var(--foreground-muted)] hover:text-[var(--foreground)] hover:bg-[var(--background-tertiary)] rounded-md transition-all">
-                    Sign in
-                  </button>
-                </SignInButton>
-              </Show>
-              <Show when="signed-in">
-                <UserButton
-                  appearance={{
-                    elements: {
-                      avatarBox: "w-6 h-6 sm:w-7 sm:h-7",
-                    },
-                  }}
-                />
-              </Show>
-            </div>
           </nav>
         </div>
       </div>
@@ -160,21 +134,19 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${inter.variable} antialiased min-h-screen`}>
-        <ClerkProvider appearance={{ baseTheme: dark }}>
-          <Header />
-          <main className="pt-14">
-            {children}
-          </main>
-          <ChatWidget
-            suggestions={[
-              "What do channels say about crash retrievals?",
-              "Who is David Grusch?",
-              "What evidence exists for UAPs?",
-              "Explain remote viewing and Project Stargate",
-            ]}
-          />
-          <Footer />
-        </ClerkProvider>
+        <Header />
+        <main className="pt-14">
+          {children}
+        </main>
+        <ChatWidgetLoader
+          suggestions={[
+            "What do channels say about crash retrievals?",
+            "Who is David Grusch?",
+            "What evidence exists for UAPs?",
+            "Explain remote viewing and Project Stargate",
+          ]}
+        />
+        <Footer />
       </body>
     </html>
   );

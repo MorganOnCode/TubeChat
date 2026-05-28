@@ -1,13 +1,6 @@
-import { createClient } from '@supabase/supabase-js';
 import { generateEmbedding, getClient } from '@/lib/llm';
 import { NextRequest } from 'next/server';
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-
-function getAdminClient() {
-    return createClient(supabaseUrl, supabaseServiceKey);
-}
+import { sql, matchTranscriptChunks } from '@/lib/db';
 
 interface Message {
     role: 'user' | 'assistant';
@@ -72,8 +65,6 @@ async function retrieveContext(
     channelId?: string,
     videoId?: string
 ): Promise<{ chunks: any[]; videos: Map<string, any> }> {
-    const supabase = getAdminClient();
-
     // Generate embedding for vector search
     const embedding = await generateEmbedding(searchQuery);
     if (embedding.length === 0) return { chunks: [], videos: new Map() };
@@ -82,26 +73,21 @@ async function retrieveContext(
     let scopeVideoIds: string[] | null = null;
 
     if (videoId) {
-        const { data } = await supabase.from('videos').select('id').eq('youtube_id', videoId).limit(1);
-        if (data?.length) scopeVideoIds = [data[0].id];
+        const rows = await sql<{ id: string }[]>`SELECT id FROM videos WHERE youtube_id = ${videoId} LIMIT 1`;
+        if (rows.length) scopeVideoIds = [rows[0].id];
     } else if (channelId) {
-        const { data } = await supabase.from('videos').select('id').eq('channel_id', channelId);
-        if (data) scopeVideoIds = data.map(v => v.id);
+        const rows = await sql<{ id: string }[]>`SELECT id FROM videos WHERE channel_id = ${channelId}`;
+        scopeVideoIds = rows.map((r) => r.id);
     }
 
     // Vector search — cast wider net
-    const { data: vectorChunks, error } = await supabase.rpc('match_transcript_chunks', {
-        query_embedding: embedding,
-        match_threshold: 0.3,
-        match_count: 30,
-    });
-
-    if (error) {
-        console.error('Vector search error:', error);
+    let chunks: any[];
+    try {
+        chunks = await matchTranscriptChunks(embedding, 0.3, 30);
+    } catch (e) {
+        console.error('Vector search error:', e);
         return { chunks: [], videos: new Map() };
     }
-
-    let chunks = vectorChunks || [];
 
     // Filter by scope if needed
     if (scopeVideoIds) {
@@ -115,15 +101,15 @@ async function retrieveContext(
     if (chunks.length === 0) return { chunks: [], videos: new Map() };
 
     // Fetch video details
-    const videoIds = [...new Set(chunks.map((c: any) => c.video_id))];
-    const { data: videos } = await supabase
-        .from('videos')
-        .select('id, youtube_id, title, published_at, channel:channels(name)')
-        .in('id', videoIds);
+    const videoIds = [...new Set(chunks.map((c: any) => c.video_id))] as string[];
+    const videos = await sql<any[]>`
+        SELECT v.id, v.youtube_id, v.title, v.published_at, c.name AS channel_name
+        FROM videos v
+        LEFT JOIN channels c ON c.id = v.channel_id
+        WHERE v.id IN ${sql(videoIds)}
+    `;
 
-    const videoMap = new Map(
-        (videos || []).map((v: any) => [v.id, { ...v, channel_name: v.channel?.name }])
-    );
+    const videoMap = new Map(videos.map((v: any) => [v.id, { ...v, channel_name: v.channel_name }]));
 
     return { chunks, videos: videoMap };
 }
@@ -144,7 +130,7 @@ async function generateResponse(
     const contextParts = chunks.map((chunk: any, i: number) => {
         const video = videoMap.get(chunk.video_id);
         const label = video
-            ? `[Source ${i + 1}: "${video.title}" by ${video.channel_name}, ${video.published_at?.split('T')[0] || 'unknown date'}]`
+            ? `[Source ${i + 1}: "${video.title}" by ${video.channel_name}, ${video.published_at ? new Date(video.published_at).toISOString().split('T')[0] : 'unknown date'}]`
             : `[Source ${i + 1}]`;
         return `${label}\n${chunk.content}`;
     });
