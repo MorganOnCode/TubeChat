@@ -27,12 +27,18 @@ export async function transcribeWithWhisper(videoId: string): Promise<Transcript
             return null;
         }
 
+        // Optional browser cookies to pass YouTube's bot check (set
+        // YTDLP_COOKIES_FROM_BROWSER=safari|chrome|brave|firefox in .env).
+        const cookies = process.env.YTDLP_COOKIES_FROM_BROWSER
+            ? ` --cookies-from-browser ${process.env.YTDLP_COOKIES_FROM_BROWSER}`
+            : '';
+
         // Download audio
         // -x: extract audio
         // --audio-format mp3: convert to mp3
         // --audio-quality 5: medium quality (sufficient for speech, saves size)
         // -o: output template
-        execSync(`yt-dlp -x --audio-format mp3 --audio-quality 5 -o "${outputTemplate}" https://www.youtube.com/watch?v=${videoId}`, {
+        execSync(`yt-dlp${cookies} -x --audio-format mp3 --audio-quality 5 -o "${outputTemplate}" https://www.youtube.com/watch?v=${videoId}`, {
             stdio: 'inherit'
         });
 

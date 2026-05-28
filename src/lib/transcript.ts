@@ -78,9 +78,15 @@ async function fetchTranscriptYtDlp(videoId: string): Promise<TranscriptResult |
 
         console.log(`[Transcript] Fetching captions via yt-dlp for ${videoId}...`);
 
+        // Optional browser cookies to pass YouTube's bot check (set
+        // YTDLP_COOKIES_FROM_BROWSER=safari|chrome|brave|firefox in .env).
+        const cookies = process.env.YTDLP_COOKIES_FROM_BROWSER
+            ? ` --cookies-from-browser ${process.env.YTDLP_COOKIES_FROM_BROWSER}`
+            : '';
+
         // Download auto-generated English captions in json3 format
         execSync(
-            `yt-dlp --write-auto-sub --sub-lang "en,en-orig" --sub-format json3 --skip-download --no-warnings -o "${outputBase}" "https://www.youtube.com/watch?v=${videoId}"`,
+            `yt-dlp${cookies} --write-auto-sub --sub-lang "en,en-orig" --sub-format json3 --skip-download --no-warnings -o "${outputBase}" "https://www.youtube.com/watch?v=${videoId}"`,
             { stdio: 'pipe', timeout: 60000 }
         );
 
