@@ -118,7 +118,7 @@ function Footer() {
 
         <div className="mt-8 pt-6 border-t border-[var(--border)] text-center">
           <p className="text-xs text-[var(--foreground-muted)]">
-            Open-source transcript search engine · Built with Next.js, Supabase &amp; OpenAI
+            Open-source transcript search engine · Built with Next.js, Postgres, OpenAI &amp; Anthropic
           </p>
         </div>
       </div>

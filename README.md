@@ -1,36 +1,56 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# TubeChat (OpenTube)
 
-## Getting Started
+AI-powered transcript search across curated YouTube creator collections (currently UFO / UAP / NHI research). Full-text + semantic search, AI summaries, topic tagging, and a RAG "Ask" chat over the corpus.
 
-First, run the development server:
+## Tech stack
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- **Next.js 16** (App Router) + **React 19** + **TypeScript**
+- **Tailwind CSS v4** (design tokens in `src/app/globals.css`)
+- **Self-hosted Postgres 16 + pgvector** as the single system of record (no external BaaS)
+- **OpenAI** — `text-embedding-3-small` embeddings + `gpt-4o-mini` RAG
+- **Anthropic** — transcript cleaning / summaries (ingestion-time)
+- **Docker Compose** for production (`web` + `postgres`), fronted by a Cloudflare tunnel
+
+> Migrated off Supabase/Vercel to a self-hosted VPS — see `MIGRATION_RUNBOOK.md`. The app talks to Postgres directly via `DATABASE_URL` (`src/lib/db.ts`); there is no Supabase dependency.
+
+## Architecture
+
+```
+YouTube ──ingest──▶ Postgres (pgvector) ◀──reads── Next.js app ──▶ users
+          enrich        ▲                            (SSR + API routes)
+          embeddings    │
+                   self-hosted on VPS
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+- **App / API** — `src/app/**` (pages + `api/` routes for search, ask, videos, cron)
+- **DB adapter** — `src/lib/db.ts` (postgres.js + pgvector)
+- **Ingestion pipeline** — `src/scripts/{ingest,enrich,generate-embeddings}.ts`, run from a residential IP (laptop) over an SSH tunnel because the VPS datacenter IP is blocked by YouTube
+- **Schema / migrations** — `supabase/` (SQL migrations; the directory name is historical)
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Local development
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+cp .env.example .env   # fill in keys + DATABASE_URL
+npm install
+npm run dev            # http://localhost:3000
+```
 
-## Learn More
+## Production (VPS)
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `web` is bound to `127.0.0.1:3002` (Cloudflare tunnel terminates public traffic).
+- `postgres` is bound to `127.0.0.1:5433` so laptop ingestion can tunnel in.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Scripts
 
-## Deploy on Vercel
+| Command | Purpose |
+| --- | --- |
+| `npm run ingest` | Pull new videos + transcripts into Postgres |
+| `npm run enrich` | Clean transcripts / generate summaries (Anthropic) |
+| `npm run generate-embeddings` | Backfill pgvector embeddings (OpenAI) |
+| `npm run sync` | One-cycle laptop sync: tunnel → ingest → enrich → embeddings |
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Disaster recovery: `scripts/restore-from-backup.mjs` restores the gzipped-NDJSON export under `backups/` into Postgres.
