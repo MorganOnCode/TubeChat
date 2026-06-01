@@ -18,6 +18,14 @@ const SUGGESTIONS = [
   "Strongest evidence for crash retrievals?",
 ];
 
+async function getLatest() {
+  try {
+    return await getVideos({ limit: 6 });
+  } catch {
+    return [];
+  }
+}
+
 async function getStats() {
   try {
     const [row] = await sql<{ videos: number; channels: number; chunks: number }[]>`
@@ -92,7 +100,7 @@ export default async function Home() {
     getStats(),
     getChannelCards(),
     getTopics(),
-    getVideos({ limit: 6 }),
+    getLatest(),
     getActivity(),
   ]);
 

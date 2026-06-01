@@ -106,12 +106,15 @@ export interface TopicDetailData {
   maxYear: number | null;
 }
 
-const SLUG_EXPR = sql`trim(both '-' from lower(regexp_replace(name, '[^a-zA-Z0-9]+', '-', 'g')))`;
-
 export async function getTopicDetail(slug: string): Promise<TopicDetailData | null> {
   try {
+    // Match the tag whose slugified name equals the route slug. The expression
+    // is inline (not a module-level `sql` fragment) so the lazy DB client is
+    // only touched at request time, never at import/build time.
     const [tag] = await sql<{ name: string }[]>`
-      SELECT name FROM tags WHERE ${SLUG_EXPR} = ${slug} ORDER BY name LIMIT 1
+      SELECT name FROM tags
+      WHERE trim(both '-' from lower(regexp_replace(name, '[^a-zA-Z0-9]+', '-', 'g'))) = ${slug}
+      ORDER BY name LIMIT 1
     `;
     if (!tag) return null;
     const name = tag.name;
