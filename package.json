@@ -10,6 +10,7 @@
     "ingest": "tsx src/scripts/ingest.ts",
     "enrich": "tsx src/scripts/enrich.ts",
     "generate-embeddings": "tsx src/scripts/generate-embeddings.ts",
+    "backfill-timestamps": "tsx src/scripts/backfill-timestamps.ts",
     "sync": "bash scripts/sync.sh"
   },
   "dependencies": {
