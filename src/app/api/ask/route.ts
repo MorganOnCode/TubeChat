@@ -103,7 +103,8 @@ async function retrieveContext(
     // Fetch video details
     const videoIds = [...new Set(chunks.map((c: any) => c.video_id))] as string[];
     const videos = await sql<any[]>`
-        SELECT v.id, v.youtube_id, v.title, v.published_at, c.name AS channel_name
+        SELECT v.id, v.youtube_id, v.title, v.published_at,
+               c.id AS channel_id, c.name AS channel_name
         FROM videos v
         LEFT JOIN channels c ON c.id = v.channel_id
         WHERE v.id IN ${sql(videoIds)}
@@ -114,33 +115,7 @@ async function retrieveContext(
     return { chunks, videos: videoMap };
 }
 
-/**
- * Step 3: Generate conversational response with sources
- */
-async function generateResponse(
-    userMessage: string,
-    searchQuery: string,
-    chunks: any[],
-    videoMap: Map<string, any>,
-    conversationHistory: Message[]
-): Promise<{ answer: string; sources: any[]; tokensUsed: number }> {
-    const openai = getClient();
-
-    // Build context from chunks
-    const contextParts = chunks.map((chunk: any, i: number) => {
-        const video = videoMap.get(chunk.video_id);
-        const label = video
-            ? `[Source ${i + 1}: "${video.title}" by ${video.channel_name}, ${video.published_at ? new Date(video.published_at).toISOString().split('T')[0] : 'unknown date'}]`
-            : `[Source ${i + 1}]`;
-        return `${label}\n${chunk.content}`;
-    });
-    const context = contextParts.join('\n\n---\n\n');
-
-    // Build conversation messages
-    const messages: any[] = [
-        {
-            role: 'system',
-            content: `You are ScriptTube AI, an expert research assistant with access to a database of 3,600+ transcribed YouTube videos about UFOs, UAPs, NHI (non-human intelligence), consciousness, government disclosure, ancient civilizations, and related topics.
+const SYSTEM_PROMPT = `You are ScriptTube AI, an expert research assistant with access to a database of 3,600+ transcribed YouTube videos about UFOs, UAPs, NHI (non-human intelligence), consciousness, government disclosure, ancient civilizations, and related topics.
 
 Your personality:
 - Knowledgeable and conversational — like talking to a well-read friend
@@ -163,103 +138,156 @@ You do NOT:
 - Make up information not in the sources
 - Claim things as fact without citation
 - Give medical, legal, or financial advice
-- Break character as a transcript research tool`
-        }
-    ];
+- Break character as a transcript research tool`;
 
-    // Add conversation history (last 8 turns for context)
+/** Build the chat messages (system + history + current turn with context). */
+function buildMessages(
+    userMessage: string,
+    chunks: any[],
+    videoMap: Map<string, any>,
+    conversationHistory: Message[]
+): any[] {
+    const contextParts = chunks.map((chunk: any, i: number) => {
+        const video = videoMap.get(chunk.video_id);
+        const label = video
+            ? `[Source ${i + 1}: "${video.title}" by ${video.channel_name}, ${video.published_at ? new Date(video.published_at).toISOString().split('T')[0] : 'unknown date'}]`
+            : `[Source ${i + 1}]`;
+        return `${label}\n${chunk.content}`;
+    });
+    const context = contextParts.join('\n\n---\n\n');
+
+    const messages: any[] = [{ role: 'system', content: SYSTEM_PROMPT }];
     for (const msg of conversationHistory.slice(-8)) {
         messages.push({ role: msg.role, content: msg.content });
     }
-
-    // Add current turn with context
     messages.push({
         role: 'user',
         content: chunks.length > 0
             ? `${userMessage}\n\n--- RELEVANT TRANSCRIPT EXCERPTS ---\n\n${context}`
-            : userMessage
+            : userMessage,
     });
+    return messages;
+}
 
-    const completion = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        max_tokens: 2000,
-        temperature: 0.5,
-        messages,
-    });
-
-    const answer = completion.choices[0]?.message?.content || 'Sorry, I had trouble generating a response. Try rephrasing your question.';
-
-    // Build deduplicated source list
+/** Deduplicated source list — one clip per video, carrying its start time + deep-link URL. */
+function buildSources(chunks: any[], videoMap: Map<string, any>): any[] {
     const seenVideoIds = new Set<string>();
-    const sources = chunks
+    return chunks
         .map((chunk: any) => {
             const video = videoMap.get(chunk.video_id);
             if (!video || seenVideoIds.has(video.youtube_id)) return null;
             seenVideoIds.add(video.youtube_id);
+            const startSeconds = typeof chunk.start_time === "number" ? chunk.start_time : null;
+            const url = `/v/${video.youtube_id}${startSeconds != null ? `?t=${startSeconds}` : ""}`;
             return {
                 videoId: video.youtube_id,
+                channelId: video.channel_id ?? null,
                 title: video.title,
                 channel: video.channel_name,
                 publishedAt: video.published_at,
                 similarity: Math.round(chunk.similarity * 100),
                 snippet: chunk.content.slice(0, 200),
+                startSeconds,
+                url,
             };
         })
-        .filter(Boolean);
-
-    return {
-        answer,
-        sources: sources.slice(0, 8),
-        tokensUsed: completion.usage?.total_tokens || 0,
-    };
+        .filter(Boolean)
+        .slice(0, 8);
 }
 
+/**
+ * Streams the answer as newline-delimited JSON events:
+ *   {type:"stage", stage:"searching"|"found"|"reading"|"answering", count?}
+ *   {type:"sources", sources:[...]}
+ *   {type:"token", text:"..."}
+ *   {type:"done", tokensUsed, searchQuery}
+ *   {type:"error", message}
+ */
 export async function POST(request: NextRequest) {
+    let body: { question?: string; channelId?: string; videoId?: string; history?: Message[] };
     try {
-        const { question, channelId, videoId, history = [] } = await request.json();
-
-        if (!question || typeof question !== 'string' || question.trim().length < 1) {
-            return Response.json({ error: 'Question too short' }, { status: 400 });
-        }
-
-        const userMessage = question.trim().slice(0, 1000);
-        const conversationHistory: Message[] = (history || []).slice(-10);
-
-        // Step 1: Reformulate query
-        const { searchQuery, needsSearch, directResponse } = await reformulateQuery(
-            userMessage,
-            conversationHistory
-        );
-
-        // If no search needed (greeting, thanks, etc.), respond directly
-        if (!needsSearch && directResponse) {
-            return Response.json({
-                answer: directResponse,
-                sources: [],
-                tokensUsed: 0,
-                searchQuery: null,
-            });
-        }
-
-        // Step 2: Retrieve relevant context
-        const { chunks, videos } = await retrieveContext(searchQuery, channelId, videoId);
-
-        // Step 3: Generate response
-        const result = await generateResponse(
-            userMessage,
-            searchQuery,
-            chunks,
-            videos,
-            conversationHistory
-        );
-
-        return Response.json({
-            ...result,
-            searchQuery, // Send back for debugging/transparency
-        });
-
-    } catch (error) {
-        console.error('Ask API error:', error);
-        return Response.json({ error: 'Internal server error' }, { status: 500 });
+        body = await request.json();
+    } catch {
+        return Response.json({ error: 'Invalid request body' }, { status: 400 });
     }
+
+    const { question, channelId, videoId, history = [] } = body;
+    if (!question || typeof question !== 'string' || question.trim().length < 1) {
+        return Response.json({ error: 'Question too short' }, { status: 400 });
+    }
+
+    const userMessage = question.trim().slice(0, 1000);
+    const conversationHistory: Message[] = (history || []).slice(-10);
+    const openai = getClient();
+    const encoder = new TextEncoder();
+
+    const stream = new ReadableStream({
+        async start(controller) {
+            const send = (obj: unknown) => controller.enqueue(encoder.encode(JSON.stringify(obj) + '\n'));
+            try {
+                send({ type: 'stage', stage: 'searching' });
+
+                const { searchQuery, needsSearch, directResponse } = await reformulateQuery(
+                    userMessage,
+                    conversationHistory,
+                );
+
+                // Greeting / chitchat → stream the direct response, no sources.
+                if (!needsSearch && directResponse) {
+                    send({ type: 'sources', sources: [] });
+                    send({ type: 'stage', stage: 'answering' });
+                    send({ type: 'token', text: directResponse });
+                    send({ type: 'done', tokensUsed: 0, searchQuery: null });
+                    controller.close();
+                    return;
+                }
+
+                const { chunks, videos } = await retrieveContext(searchQuery, channelId, videoId);
+                const sources = buildSources(chunks, videos);
+                send({ type: 'stage', stage: 'found', count: sources.length });
+                send({ type: 'sources', sources });
+                send({ type: 'stage', stage: 'reading' });
+
+                const messages = buildMessages(userMessage, chunks, videos, conversationHistory);
+                send({ type: 'stage', stage: 'answering' });
+
+                const completion = await openai.chat.completions.create({
+                    model: 'gpt-4o-mini',
+                    max_tokens: 2000,
+                    temperature: 0.5,
+                    messages,
+                    stream: true,
+                    stream_options: { include_usage: true },
+                });
+
+                let tokensUsed = 0;
+                let emitted = false;
+                for await (const part of completion) {
+                    const delta = part.choices?.[0]?.delta?.content;
+                    if (delta) {
+                        emitted = true;
+                        send({ type: 'token', text: delta });
+                    }
+                    if (part.usage?.total_tokens) tokensUsed = part.usage.total_tokens;
+                }
+                if (!emitted) {
+                    send({ type: 'token', text: 'Sorry, I had trouble generating a response. Try rephrasing your question.' });
+                }
+                send({ type: 'done', tokensUsed, searchQuery });
+                controller.close();
+            } catch (error) {
+                console.error('Ask API stream error:', error);
+                send({ type: 'error', message: 'Something went wrong generating the answer. Please retry.' });
+                controller.close();
+            }
+        },
+    });
+
+    return new Response(stream, {
+        headers: {
+            'Content-Type': 'application/x-ndjson; charset=utf-8',
+            'Cache-Control': 'no-cache, no-transform',
+            'X-Accel-Buffering': 'no',
+        },
+    });
 }

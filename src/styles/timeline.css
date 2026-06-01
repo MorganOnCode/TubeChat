@@ -1,0 +1,77 @@
+/* tubechat — Timeline (80 years of UAP). Ported from design handoff timeline.css. */
+@layer components {
+  .tl-wrap { padding-top: 22px; padding-bottom: 64px; }
+
+  .tl-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; flex-wrap: wrap; margin-bottom: 26px; }
+  .tl-cats { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .tl-axis-wrap { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 26px 26px 0; box-shadow: var(--shadow-card); overflow: hidden; }
+  .tl-axis-wrap::before { content: ''; position: absolute; inset: 0; background-image: linear-gradient(var(--line) 1px, transparent 1px); background-size: 100% 40px; opacity: .35; pointer-events: none; }
+  .tl-axis { position: relative; display: grid; height: 200px; z-index: 1; }
+  .tl-col { position: relative; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; border-left: 1px dashed var(--line); cursor: pointer; padding: 0 4px; background: none; }
+  .tl-col:first-child { border-left: none; }
+  .tl-col:hover .tl-bar { background: var(--line-bright); }
+  .tl-bar.on { background: var(--accent); box-shadow: 0 0 18px var(--accent-glow); }
+  .tl-col.sel .tl-bar.on { background: var(--accent); box-shadow: 0 0 18px var(--accent-glow); }
+  .tl-col.sel .tl-decade { color: var(--accent); }
+
+  .tl-bar { width: 60%; max-width: 40px; background: var(--surface-3); border-radius: 4px 4px 0 0; transition: height .3s cubic-bezier(.4,0,.2,1); position: relative; }
+  .tl-bar .tl-barct { position: absolute; top: -19px; left: 50%; transform: translateX(-50%); font-family: var(--font-mono); font-size: 10px; color: var(--ink-3); opacity: 0; transition: opacity .15s; white-space: nowrap; }
+  .tl-col:hover .tl-barct, .tl-col.sel .tl-barct { opacity: 1; }
+  .tl-col.sel .tl-barct { color: var(--accent); }
+
+  .tl-base { position: relative; height: 1px; background: var(--line-bright); z-index: 1; margin: 0 -26px; }
+
+  .tl-labels { position: relative; display: grid; z-index: 1; padding: 12px 0 24px; }
+  .tl-lab { text-align: center; padding: 0 4px; cursor: pointer; background: none; border: none; }
+  .tl-decade { font-family: var(--font-display); font-size: 19px; color: var(--ink); letter-spacing: -0.01em; transition: color .15s; }
+  .tl-evt { font-size: 10.5px; color: var(--ink-3); margin-top: 3px; line-height: 1.3; min-height: 26px; }
+
+  .tl-scrub { position: absolute; top: 14px; bottom: 0; width: 2px; background: var(--accent); z-index: 2; pointer-events: none; }
+  .tl-scrub::before { content: ''; position: absolute; top: -6px; left: -6px; width: 14px; height: 14px; border-radius: 4px; background: var(--accent); box-shadow: 0 0 12px var(--accent-glow); }
+  .tl-scrub::after { content: ''; position: absolute; bottom: -1px; left: -4px; width: 10px; height: 10px; border-radius: 999px; background: var(--accent); }
+
+  .tl-drawer { margin-top: 22px; display: grid; grid-template-columns: 300px minmax(0,1fr); gap: 30px; align-items: start; }
+  .tl-drawer-hd { display: flex; align-items: baseline; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tl-drawer-hd .dec { font-family: var(--font-display); font-size: 40px; letter-spacing: -0.02em; line-height: 1; }
+  .tl-decnav { display: flex; gap: 8px; margin-left: auto; }
+
+  .tl-events { display: flex; flex-direction: column; gap: 2px; }
+  .tl-event { display: flex; gap: 12px; align-items: flex-start; padding: 11px 12px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; transition: background .14s, border-color .14s; width: 100%; text-align: left; background: none; }
+  .tl-event:hover { background: var(--surface-2); }
+  .tl-event.sel { background: var(--surface-2); border-color: var(--line-2); }
+  .tl-event .yr { font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); flex: none; width: 34px; padding-top: 1px; }
+  .tl-event.sel .yr { color: var(--accent); }
+  .tl-event .ev-t { font-size: 14px; color: var(--ink-2); line-height: 1.4; }
+  .tl-event.sel .ev-t { color: var(--ink); }
+  .tl-event .ev-c { font-family: var(--font-mono); font-size: 10.5px; color: var(--ink-faint); margin-top: 3px; }
+  .tl-event .ev-dot { width: 7px; height: 7px; border-radius: 999px; flex: none; margin-top: 6px; }
+
+  .tl-clips-hd { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 14px; flex-wrap: wrap; gap: 8px; }
+  .tl-clips-hd .t { font-size: 15px; }
+  .tl-clips-hd .t b { color: var(--accent); font-weight: 600; }
+  .tl-clip-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
+  .tl-clip { display: block; text-decoration: none; color: inherit; background: var(--surface); border: 1px solid var(--line); border-radius: 13px; overflow: hidden; box-shadow: var(--shadow-card); transition: border-color .15s, transform .15s; }
+  .tl-clip:hover { border-color: var(--line-bright); transform: translateY(-2px); }
+  .tl-clip .th { position: relative; aspect-ratio: 16/9; background: linear-gradient(135deg, var(--surface-3), var(--surface-2)); display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .tl-clip .th img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .tl-clip .th .play { width: 38px; height: 38px; border-radius: 999px; background: color-mix(in oklab, var(--accent) 90%, transparent); color: var(--accent-ink); display: flex; align-items: center; justify-content: center; font-size: 13px; position: relative; z-index: 1; }
+  .tl-clip .th .ts { position: absolute; bottom: 8px; right: 8px; z-index: 1; font-family: var(--font-mono); font-size: 11px; background: rgba(0,0,0,.6); color: #fff; padding: 2px 6px; border-radius: 5px; }
+  .tl-clip .body { padding: 12px 13px 14px; }
+  .tl-clip .ct { font-size: 13.5px; color: var(--ink); line-height: 1.4; font-weight: 500; }
+  .tl-clip .cm { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 11.5px; color: var(--ink-3); }
+
+  .tl-ask-row { margin-top: 18px; display: flex; align-items: center; gap: 12px; padding: 14px 16px; border: 1px dashed var(--line-2); border-radius: 12px; background: var(--surface); flex-wrap: wrap; }
+  .tl-ask-row .txt { font-size: 13.5px; color: var(--ink-2); flex: 1; }
+
+  @media (max-width: 920px) {
+    .tl-drawer { grid-template-columns: 1fr; }
+    .tl-decade { font-size: 16px; }
+    .tl-evt { display: none; }
+  }
+  @media (max-width: 600px) {
+    .tl-clip-grid { grid-template-columns: 1fr; }
+    .tl-axis { height: 150px; }
+    .tl-drawer-hd .dec { font-size: 30px; }
+  }
+}

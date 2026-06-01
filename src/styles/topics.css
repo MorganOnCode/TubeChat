@@ -1,0 +1,78 @@
+/* tubechat — Topics (index + detail). Ported from design handoff topics.css. */
+@keyframes sparkPulse { 0%,100% { opacity: .4; } 50% { opacity: .85; } }
+
+@layer components {
+  .tpx-wrap { padding-top: 22px; padding-bottom: 64px; }
+
+  .tpx-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 24px; }
+  .tpx-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .tpx-search { display: flex; align-items: center; gap: 9px; background: var(--surface); border: 1px solid var(--line-2); border-radius: 10px; padding: 9px 13px; min-width: 240px; }
+  .tpx-search input { flex: 1; border: none; outline: none; background: transparent; color: var(--ink); font-size: 14px; font-family: var(--font-ui); }
+  .tpx-search input::placeholder { color: var(--ink-3); }
+
+  .tpx-cats { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+
+  .tpx-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .tpx-card {
+    position: relative; overflow: hidden;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 15px; padding: 18px; cursor: pointer;
+    box-shadow: var(--shadow-card);
+    display: flex; flex-direction: column; gap: 13px; min-height: 150px;
+    transition: border-color .16s, transform .16s;
+    text-decoration: none; color: inherit;
+  }
+  .tpx-card:hover { border-color: var(--line-bright); transform: translateY(-2px); }
+  .tpx-card.hot { border-color: color-mix(in oklab, var(--accent) 34%, transparent); }
+  .tpx-card .tnm { font-size: 16.5px; font-weight: 600; letter-spacing: -0.01em; display: flex; align-items: center; gap: 8px; color: var(--ink); }
+  .tpx-card .tnm .fire { color: var(--accent); font-size: 12px; font-family: var(--font-mono); }
+  .tpx-card .tnm .badge { font-family: var(--font-mono); font-size: 10px; letter-spacing: .03em; padding: 2px 7px; border-radius: 999px; font-weight: 500; }
+  .tpx-card .tnm .badge.new { color: var(--accent-ink); background: var(--accent); }
+  .tpx-card .tnm .badge.idx { color: var(--ink-2); background: var(--surface-3); border: 1px solid var(--line-2); }
+  .tpx-card .tblurb { font-size: 12.5px; color: var(--ink-2); line-height: 1.5; flex: 1; }
+  .tpx-card .tblurb.empty { color: var(--ink-3); font-style: italic; }
+  .tpx-card.emerging { border-style: dashed; }
+  .tpx-card.emerging:hover { border-style: solid; }
+  .tpx-card .trow { display: flex; align-items: center; justify-content: space-between; }
+  .tpx-card .tcount { font-family: var(--font-mono); font-size: 12px; color: var(--ink-3); }
+  .tpx-card .tcount b { color: var(--ink); font-weight: 500; }
+  .tpx-card .tarrow { color: var(--ink-faint); transition: transform .16s, color .16s; }
+  .tpx-card:hover .tarrow { color: var(--accent); transform: translateX(3px); }
+
+  .spark { display: flex; align-items: flex-end; gap: 3px; height: 30px; }
+  .spark span { flex: 1; background: var(--surface-3); border-radius: 2px 2px 0 0; min-height: 3px; transition: background .16s; }
+  .tpx-card:hover .spark span { background: var(--line-bright); }
+  .tpx-card.hot .spark span.pk { background: var(--accent); }
+  .spark.pending span { background: var(--surface-3); animation: sparkPulse 1.5s ease-in-out infinite; }
+  .spark.pending span:nth-child(2n) { animation-delay: .2s; }
+  .spark.pending span:nth-child(3n) { animation-delay: .4s; }
+
+  /* ---- detail ---- */
+  .tpd-hero { padding: 6px 0 22px; }
+  .tpd-cat { font-family: var(--font-mono); font-size: 11.5px; color: var(--accent); letter-spacing: .06em; text-transform: uppercase; }
+  .tpd-name { font-family: var(--font-display); font-weight: 440; font-size: clamp(32px, 4vw, 50px); letter-spacing: -0.02em; line-height: 1.05; margin-top: 10px; }
+  .tpd-blurb { font-size: 15.5px; color: var(--ink-2); line-height: 1.6; margin-top: 14px; max-width: 64ch; }
+
+  .tpd-statbar { display: flex; gap: 36px; flex-wrap: wrap; padding: 18px 0; margin: 18px 0 8px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .tpd-statbar .stat .n { font-family: var(--font-mono); font-size: 21px; color: var(--ink); letter-spacing: -0.02em; }
+  .tpd-statbar .stat .l { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
+
+  .tpd-grid { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 34px; align-items: start; margin-top: 28px; }
+
+  .askt { background: var(--surface); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow-card); overflow: hidden; margin-bottom: 30px; }
+  .askt-hd { display: flex; align-items: center; gap: 9px; padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--ink-2); }
+  .askt-body { padding: 14px 16px; }
+  .askt-ta { width: 100%; border: none; outline: none; resize: none; background: transparent; font-family: var(--font-ui); font-size: 15px; color: var(--ink); min-height: 26px; }
+  .askt-ta::placeholder { color: var(--ink-3); }
+  .askt-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+  .askt-sugg { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+
+  .tpd-side .panel-block { margin-bottom: 26px; }
+
+  @media (max-width: 980px) { .tpx-grid { grid-template-columns: repeat(2, 1fr); } .tpd-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 620px) {
+    .tpx-grid { grid-template-columns: 1fr; }
+    .tpx-head { flex-direction: column; align-items: stretch; }
+    .tpd-statbar { gap: 22px; }
+  }
+}

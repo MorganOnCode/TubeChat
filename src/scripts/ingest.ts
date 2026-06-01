@@ -170,6 +170,21 @@ async function ingestVideo(channelDbId: string, ytVideoId: string, skipLlmProces
                 source = EXCLUDED.source, processing_status = 'completed', updated_at = now()
         `;
 
+        // Persist timed caption cues for timestamp deep-links + synced transcripts.
+        // Wrapped defensively: a no-op on databases where the `segments` column
+        // hasn't been added yet (run the ALTER in docker/init-db.sql first).
+        if (transcriptResult.segments?.length) {
+            try {
+                await sql`
+                    UPDATE transcripts
+                    SET segments = ${JSON.stringify(transcriptResult.segments)}::jsonb
+                    WHERE video_id = ${videoDbId}
+                `;
+            } catch {
+                console.log(`   ℹ️  segments column not present yet — skipping timed segments`);
+            }
+        }
+
         for (const tagName of tags) {
             const [tag] = await sql<{ id: string }[]>`
                 INSERT INTO tags (name) VALUES (${tagName.toLowerCase()})

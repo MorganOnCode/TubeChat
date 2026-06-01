@@ -1,14 +1,23 @@
+import "@/styles/topics.css";
+
+// Deterministic widths (no Math.random — must be pure for render).
+const WIDTHS = [120, 90, 150, 110, 80, 140, 100, 130, 95];
+
 export default function TopicsLoading() {
-    return (
-        <div className="max-w-6xl mx-auto px-4 py-8">
-            <div className="h-8 w-40 bg-[var(--background-elevated)] rounded animate-pulse mb-2" />
-            <div className="h-4 w-80 bg-[var(--background-elevated)] rounded animate-pulse mb-8" />
-            <div className="flex flex-wrap gap-2">
-                {Array.from({ length: 30 }).map((_, i) => (
-                    <div key={i} className="h-8 bg-[var(--background-elevated)] rounded-full animate-pulse"
-                         style={{ width: `${60 + Math.random() * 80}px` }} />
-                ))}
-            </div>
-        </div>
-    );
+  return (
+    <div className="wrap tpx-wrap">
+      <div className="skeleton" style={{ height: 40, width: 240, marginBottom: 14 }} />
+      <div className="skeleton" style={{ height: 16, width: 380, marginBottom: 24 }} />
+      <div className="tpx-grid">
+        {Array.from({ length: 9 }).map((_, i) => (
+          <div key={i} className="tpx-card" style={{ cursor: "default" }}>
+            <div className="skeleton" style={{ height: 18, width: WIDTHS[i % WIDTHS.length] }} />
+            <div className="skeleton" style={{ height: 36, width: "100%" }} />
+            <div className="skeleton" style={{ height: 30, width: "100%" }} />
+            <div className="skeleton" style={{ height: 12, width: "60%" }} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }

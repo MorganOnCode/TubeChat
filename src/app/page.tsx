@@ -1,36 +1,24 @@
 import Link from "next/link";
-import { sql, getVideos, getAllTags, type VideoWithDetails, type Tag } from "@/lib/db";
+import { sql, getVideos } from "@/lib/db";
+import { getChannelCards } from "@/lib/channels";
+import type { ScopeChannel } from "@/components/ask/AskProvider";
+import { HomeHero } from "@/components/home/HomeHero";
+import { ChannelsGrid } from "@/components/home/ChannelsGrid";
+import { SectionHeader } from "@/components/ui/SectionHeader";
+import { VideoRow } from "@/components/ui/VideoRow";
+import { formatDuration, formatDate, formatAgo } from "@/lib/format";
+import type { TopicChip } from "@/components/home/TopicRail";
+import type { ActivityItem, NowIndexing } from "@/components/home/Panels";
 
 export const revalidate = 300;
 
-interface ChannelCard {
-  id: string;
-  name: string;
-  slug: string | null;
-  thumbnail_url: string | null;
-  subscriber_count: number | null;
-  description: string | null;
-}
+const SUGGESTIONS = [
+  "What did Grusch say about NHI biologics?",
+  "Compare Tic Tac witness accounts across channels",
+  "Strongest evidence for crash retrievals?",
+];
 
-async function getLatestVideos(): Promise<VideoWithDetails[]> {
-  try {
-    return await getVideos({ limit: 8 });
-  } catch (error) {
-    console.error("Failed to fetch videos:", error);
-    return [];
-  }
-}
-
-async function getTags(): Promise<Tag[]> {
-  try {
-    return await getAllTags();
-  } catch (error) {
-    console.error("Failed to fetch tags:", error);
-    return [];
-  }
-}
-
-async function getStats(): Promise<{ videos: number; channels: number; chunks: number }> {
+async function getStats() {
   try {
     const [row] = await sql<{ videos: number; channels: number; chunks: number }[]>`
       SELECT
@@ -38,218 +26,139 @@ async function getStats(): Promise<{ videos: number; channels: number; chunks: n
         (SELECT COUNT(*)::int FROM channels) AS channels,
         (SELECT COUNT(*)::int FROM transcript_chunks) AS chunks
     `;
-    return { videos: row?.videos || 0, channels: row?.channels || 0, chunks: row?.chunks || 0 };
+    return { videos: row?.videos ?? 0, channels: row?.channels ?? 0, chunks: row?.chunks ?? 0 };
   } catch {
     return { videos: 0, channels: 0, chunks: 0 };
   }
 }
 
-async function getChannelsWithThumbnails(): Promise<ChannelCard[]> {
+async function getTopics(): Promise<TopicChip[]> {
   try {
-    return await sql<ChannelCard[]>`
-      SELECT id, name, slug, thumbnail_url, subscriber_count, description
-      FROM channels
-      ORDER BY subscriber_count DESC NULLS LAST
+    const rows = await sql<{ name: string; count: number }[]>`
+      SELECT tg.name, COUNT(DISTINCT vt.video_id)::int AS count
+      FROM tags tg
+      JOIN video_tags vt ON vt.tag_id = tg.id
+      JOIN videos v ON v.id = vt.video_id AND v.status = 'completed'
+      GROUP BY tg.name
+      ORDER BY count DESC
     `;
+    return rows;
   } catch {
     return [];
   }
 }
 
-function formatDate(dateString?: string): string {
-  if (!dateString) return "";
-  return new Date(dateString).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" });
-}
+async function getActivity(): Promise<{ items: ActivityItem[]; nowIndexing: NowIndexing | null }> {
+  try {
+    const recent = await sql<{ title: string; channel_name: string | null; created_at: string }[]>`
+      SELECT v.title, c.name AS channel_name, v.created_at
+      FROM videos v
+      LEFT JOIN channels c ON c.id = v.channel_id
+      WHERE v.status = 'completed'
+      ORDER BY v.created_at DESC
+      LIMIT 4
+    `;
+    const items: ActivityItem[] = recent.map((r) => ({
+      body: r.channel_name ?? "Unknown channel",
+      detail: r.title.length > 44 ? r.title.slice(0, 44) + "…" : r.title,
+      ago: formatAgo(r.created_at),
+    }));
 
-function formatDuration(seconds?: number): string {
-  if (!seconds) return "";
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes} min`;
-}
+    const inflight = await sql<{ title: string; channel_name: string | null; thumbnail_url: string | null }[]>`
+      SELECT v.title, c.name AS channel_name, c.thumbnail_url
+      FROM videos v
+      LEFT JOIN channels c ON c.id = v.channel_id
+      WHERE v.status IN ('processing', 'pending')
+      ORDER BY v.updated_at DESC
+      LIMIT 1
+    `;
+    const nowIndexing: NowIndexing | null = inflight[0]
+      ? {
+          name: inflight[0].channel_name ?? "Channel",
+          logoUrl: inflight[0].thumbnail_url,
+          label: inflight[0].title.length > 38 ? inflight[0].title.slice(0, 38) + "…" : inflight[0].title,
+          percent: 60,
+        }
+      : null;
 
-function formatCount(n: number): string {
-  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(0)}K`;
-  return n.toString();
+    return { items, nowIndexing };
+  } catch {
+    return { items: [], nowIndexing: null };
+  }
 }
 
 export default async function Home() {
-  const [videos, tags, stats, channels] = await Promise.all([
-    getLatestVideos(),
-    getTags(),
+  const [stats, channels, topics, latest, activity] = await Promise.all([
     getStats(),
-    getChannelsWithThumbnails(),
+    getChannelCards(),
+    getTopics(),
+    getVideos({ limit: 6 }),
+    getActivity(),
   ]);
 
+  const scopeChannels: ScopeChannel[] = channels.map((c) => ({
+    id: c.id,
+    name: c.name,
+    slug: c.slug,
+    videoCount: c.videoCount,
+    logoUrl: c.thumbnailUrl,
+  }));
+
+  const trending = topics.slice(0, 5).map((t, i) => ({ title: t.name, clips: t.count, hot: i === 0 }));
+  const trendMax = trending[0]?.clips ?? 1;
+  const topicNames = topics.slice(0, 6).map((t) => t.name);
+  const statsLabel = `${stats.videos.toLocaleString()} videos · ${stats.chunks.toLocaleString()} segments indexed`;
+  const totalVideos = channels.reduce((sum, c) => sum + c.videoCount, 0);
+
   return (
-    <div>
-      {/* Hero */}
-      <section className="relative min-h-[420px] sm:min-h-[480px] overflow-hidden starfield noise">
-        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-[var(--background)]/40 to-[var(--background)]" />
-        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-[600px] h-[300px] bg-[var(--color-accent)]/4 rounded-full blur-[100px]" />
+    <main className="wrap" style={{ paddingBottom: 80 }}>
+      <HomeHero
+        channels={scopeChannels}
+        statsLabel={statsLabel}
+        suggestions={SUGGESTIONS}
+        topics={topics}
+        topicNames={topicNames}
+        trending={trending}
+        trendMax={trendMax}
+        activity={activity.items}
+        nowIndexing={activity.nowIndexing}
+      />
 
-        <div className="relative z-10 flex flex-col items-center justify-center min-h-[420px] sm:min-h-[480px] px-4 sm:px-6 text-center">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[var(--color-accent)]/10 border border-[var(--color-accent)]/20 text-[var(--color-accent)] text-[11px] font-medium tracking-wide uppercase mb-6">
-            <div className="w-1.5 h-1.5 rounded-full bg-[var(--color-accent)] animate-pulse" />
-            {stats.videos} videos indexed · {stats.chunks.toLocaleString()} searchable segments
-          </div>
+      <hr className="rule" style={{ margin: "56px 0" }} />
 
-          <h1 className="text-3xl sm:text-5xl lg:text-6xl font-bold tracking-tight">
-            <span className="text-[var(--foreground)]">Open</span><span className="text-[var(--color-accent)]">Tube</span>
-          </h1>
-
-          <p className="mt-3 sm:mt-4 text-sm sm:text-lg text-[var(--foreground-muted)] max-w-lg leading-relaxed px-2">
-            AI-powered transcript search across the best UFO, UAP &amp; NHI research channels. Ask questions, discover connections.
-          </p>
-
-          <div className="mt-6 sm:mt-8 w-full max-w-lg px-2">
-            <Link
-              href="/ask"
-              className="flex items-center gap-2 sm:gap-3 w-full h-12 sm:h-14 px-4 sm:px-5 rounded-xl bg-[var(--background-secondary)]/80 backdrop-blur-sm border border-[var(--border)] text-[var(--foreground-muted)] hover:border-[var(--color-accent)]/50 search-glow transition-all text-xs sm:text-sm group"
-            >
-              <svg className="w-4 h-4 flex-shrink-0 text-[var(--color-accent)]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-              </svg>
-              <span className="truncate">Ask anything about UFOs, UAPs, NHI research...</span>
-              <span className="ml-auto text-[10px] text-[var(--foreground-muted)]/50 hidden sm:block flex-shrink-0">Powered by RAG</span>
+      <section>
+        <SectionHeader
+          title="Indexed channels"
+          right={
+            <Link className="btn ghost" href="/channels" style={{ fontSize: 13 }}>
+              View all →
             </Link>
-            <div className="mt-3 flex justify-center gap-3 text-[10px] sm:text-[11px] text-[var(--foreground-muted)]/60">
-              <Link href="/search" className="hover:text-[var(--color-accent)] transition-colors">Keyword search</Link>
-              <span>·</span>
-              <Link href="/topics" className="hover:text-[var(--color-accent)] transition-colors">Browse topics</Link>
-              <span>·</span>
-              <Link href="/channels" className="hover:text-[var(--color-accent)] transition-colors">All channels</Link>
-            </div>
-          </div>
-        </div>
+          }
+        />
+        <ChannelsGrid channels={channels} limit={8} />
       </section>
 
-      {/* Channels — with real thumbnails */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-lg font-semibold tracking-tight">Indexed Channels</h2>
-          <Link href="/channels" className="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-light)] transition-colors">
-            View all →
-          </Link>
-        </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-          {channels.map((channel) => (
-            <Link
-              key={channel.id}
-              href={`/channels/${channel.slug}`}
-              className="group flex flex-col items-center gap-2.5 p-4 rounded-xl bg-[var(--background-secondary)] border border-[var(--border)] hover:border-[var(--color-accent)]/40 transition-all"
-            >
-              <div className="relative w-14 h-14 rounded-full overflow-hidden bg-[var(--background-tertiary)] ring-2 ring-transparent group-hover:ring-[var(--color-accent)]/30 transition-all">
-                {channel.thumbnail_url ? (
-                  <img src={channel.thumbnail_url} alt={channel.name} className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-lg">🛸</div>
-                )}
-              </div>
-              <div className="text-center min-w-0 w-full">
-                <h3 className="text-xs font-medium truncate group-hover:text-[var(--color-accent)] transition-colors">
-                  {channel.name}
-                </h3>
-                {channel.subscriber_count && (
-                  <p className="text-[10px] text-[var(--foreground-muted)] mt-0.5">
-                    {formatCount(channel.subscriber_count)} subscribers
-                  </p>
-                )}
-              </div>
-            </Link>
-          ))}
-        </div>
-      </section>
-
-      {/* Latest Videos */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-lg font-semibold tracking-tight">Latest Videos</h2>
-          <Link href="/videos" className="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-light)] transition-colors">
-            View all →
-          </Link>
-        </div>
-
-        {videos.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {videos.map((video) => (
-              <Link
-                key={video.id}
-                href={`/videos/${video.youtube_id}`}
-                className="group block rounded-xl overflow-hidden bg-[var(--background-secondary)] border border-[var(--border)] hover:border-[var(--color-accent)]/30 transition-all"
-              >
-                <div className="relative aspect-video bg-[var(--background-tertiary)] overflow-hidden">
-                  {video.thumbnail_url ? (
-                    <img src={video.thumbnail_url} alt={video.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <svg className="w-10 h-10 text-[var(--foreground-muted)]/30" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-                    </div>
-                  )}
-                  {video.duration_seconds && (
-                    <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/80 text-[10px] font-mono font-medium">
-                      {formatDuration(video.duration_seconds)}
-                    </div>
-                  )}
-                </div>
-                <div className="p-3">
-                  <h3 className="font-medium text-[13px] leading-snug line-clamp-2 group-hover:text-[var(--color-accent)] transition-colors">
-                    {video.title}
-                  </h3>
-                  <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-[var(--foreground-muted)]">
-                    {video.channel && <span className="text-[var(--color-accent)]/70">{video.channel.name}</span>}
-                    {video.published_at && <span>· {formatDate(video.published_at)}</span>}
-                  </div>
-                </div>
-              </Link>
-            ))}
-          </div>
-        ) : (
-          <div className="text-center py-16 text-[var(--foreground-muted)]">
-            <p className="text-sm">Ingestion in progress — videos will appear here once processed</p>
-          </div>
-        )}
-      </section>
-
-      {/* Topics cloud */}
-      {tags.length > 0 && (
-        <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-          <div className="flex items-center justify-between mb-6">
-            <h2 className="text-lg font-semibold tracking-tight">Popular Topics</h2>
-            <Link href="/topics" className="text-xs text-[var(--color-accent)] hover:text-[var(--color-accent-light)] transition-colors">
-              All topics →
-            </Link>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {tags.slice(0, 25).map((tag) => (
-              <Link
-                key={tag.id}
-                href={`/topics/${encodeURIComponent(tag.name.toLowerCase().replace(/\s+/g, '-'))}`}
-                className="px-3 py-1.5 rounded-lg text-xs bg-[var(--background-secondary)] border border-[var(--border)] text-[var(--foreground-muted)] hover:border-[var(--color-accent)]/30 hover:text-[var(--foreground)] transition-all"
-              >
-                {tag.name}
-              </Link>
+      {latest.length > 0 && (
+        <section style={{ marginTop: 56 }}>
+          <SectionHeader title="Latest indexed" />
+          <div className="col" style={{ gap: 2 }}>
+            {latest.map((v) => (
+              <VideoRow
+                key={v.id}
+                href={`/v/${v.youtube_id}`}
+                title={v.title}
+                thumbnailUrl={v.thumbnail_url}
+                durationLabel={formatDuration(v.duration_seconds)}
+                metaParts={[
+                  v.channel ? <span key="c">{v.channel.name}</span> : null,
+                  v.published_at ? <span key="d">{formatDate(v.published_at)}</span> : null,
+                  v.created_at ? <span key="a">indexed {formatAgo(v.created_at)}</span> : null,
+                ].filter(Boolean) as React.ReactNode[]}
+              />
             ))}
           </div>
         </section>
       )}
-
-      {/* About */}
-      <section className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-16 text-center">
-        <h2 className="text-lg font-semibold tracking-tight mb-3">What is OpenTube?</h2>
-        <p className="text-sm text-[var(--foreground-muted)] leading-relaxed">
-          An open-source research tool that indexes YouTube creator content, extracts transcripts using AI, 
-          and makes everything searchable via RAG-powered Q&amp;A. Starting with the UFO/UAP/NHI research community.
-        </p>
-        <div className="mt-6 flex justify-center gap-6 text-[11px] text-[var(--foreground-muted)]/50">
-          <span>{stats.channels} channels</span>
-          <span>·</span>
-          <span>{stats.videos} videos</span>
-          <span>·</span>
-          <span>{stats.chunks.toLocaleString()} searchable chunks</span>
-        </div>
-      </section>
-    </div>
+    </main>
   );
 }

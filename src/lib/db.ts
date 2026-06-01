@@ -9,6 +9,7 @@
 
 import postgres from "postgres";
 import pgvector from "pgvector/utils";
+import type { AskSource } from "./ask-types";
 
 // ---------------------------------------------------------------------------
 // Connection (lazy: Next collects route metadata at build time without env)
@@ -319,4 +320,43 @@ export async function submitErrorReport(report: {
 /** All tags, alphabetical. */
 export async function getAllTags(): Promise<Tag[]> {
     return await sql<Tag[]>`SELECT * FROM tags ORDER BY name`;
+}
+
+// ---------------------------------------------------------------------------
+// Shared answers (permalinks /a/{id})
+// ---------------------------------------------------------------------------
+
+export interface SavedAnswer {
+    id: string;
+    question: string;
+    answer: string;
+    sources: AskSource[];
+    created_at: string;
+}
+
+/** Persist an Ask result and return its id (used by the "Share" action). */
+export async function saveAnswer(
+    question: string,
+    answer: string,
+    sources: AskSource[]
+): Promise<string> {
+    const [row] = await sql<{ id: string }[]>`
+        INSERT INTO answers (question, answer, sources)
+        VALUES (${question}, ${answer}, ${JSON.stringify(sources)}::jsonb)
+        RETURNING id
+    `;
+    return row.id;
+}
+
+/** Fetch a shared answer by id; null on miss or malformed id. */
+export async function getAnswer(id: string): Promise<SavedAnswer | null> {
+    try {
+        const [row] = await sql<SavedAnswer[]>`
+            SELECT id, question, answer, sources, created_at
+            FROM answers WHERE id = ${id} LIMIT 1
+        `;
+        return row ?? null;
+    } catch {
+        return null;
+    }
 }

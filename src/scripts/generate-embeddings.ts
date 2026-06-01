@@ -12,8 +12,20 @@ function getArg(name: string): string | null {
     return arg ? arg.split('=')[1] : null;
 }
 
-function splitText(text: string): string[] {
-    const chunks: string[] = [];
+interface Chunk {
+    text: string;
+    start: number | null; // seconds
+    end: number | null;   // seconds
+}
+
+interface TimedSegment {
+    text: string;
+    offset: number;   // ms
+    duration: number; // ms
+}
+
+function splitText(text: string): Chunk[] {
+    const chunks: Chunk[] = [];
     if (!text) return chunks;
     const normalized = text.replace(/\s+/g, ' ').trim();
 
@@ -24,10 +36,32 @@ function splitText(text: string): string[] {
             const boundary = normalized.slice(start, end + 50).lastIndexOf('.');
             if (boundary > CHUNK_SIZE * 0.8) end = start + boundary + 1;
         }
-        chunks.push(normalized.slice(start, end).trim());
+        chunks.push({ text: normalized.slice(start, end).trim(), start: null, end: null });
         start = end - CHUNK_OVERLAP;
     }
     return chunks;
+}
+
+/** Group timed caption cues into ~CHUNK_SIZE windows, carrying start/end seconds. */
+function chunkSegments(segments: TimedSegment[]): Chunk[] {
+    const out: Chunk[] = [];
+    let text = '';
+    let start: number | null = null;
+    let end = 0;
+    for (const seg of segments) {
+        const t = (seg.text || '').replace(/\s+/g, ' ').trim();
+        if (!t) continue;
+        if (start === null) start = Math.floor((seg.offset || 0) / 1000);
+        text += (text ? ' ' : '') + t;
+        end = Math.ceil(((seg.offset || 0) + (seg.duration || 0)) / 1000);
+        if (text.length >= CHUNK_SIZE) {
+            out.push({ text, start, end });
+            text = '';
+            start = null;
+        }
+    }
+    if (text.trim() && start !== null) out.push({ text, start, end });
+    return out;
 }
 
 async function generateEmbeddings() {
@@ -51,24 +85,43 @@ async function generateEmbeddings() {
     let processedCount = 0;
 
     for (const video of videos) {
-        const textToChunk = video.cleaned_text || video.raw_text;
-        if (!textToChunk) {
-            console.log(`   ⚠️  No text found for video: ${video.title}`);
-            continue;
+        // Prefer timed caption cues (gives each chunk a start/end for deep-links);
+        // fall back to char-windowing the cleaned text. The segments fetch is
+        // defensive so it works before the `segments` column migration is applied.
+        let segments: TimedSegment[] | null = null;
+        try {
+            const [row] = await sql<{ segments: TimedSegment[] | null }[]>`
+                SELECT segments FROM transcripts WHERE video_id = ${video.id}
+            `;
+            segments = Array.isArray(row?.segments) && row.segments.length ? row.segments : null;
+        } catch {
+            segments = null; // column not present yet
         }
 
-        console.log(`   🎬 Processing: ${video.title} (${textToChunk.length} chars)`);
-        const chunks = splitText(textToChunk);
-        console.log(`      Generated ${chunks.length} chunks.`);
+        let chunks: Chunk[];
+        if (segments) {
+            chunks = chunkSegments(segments);
+        } else {
+            const textToChunk = video.cleaned_text || video.raw_text;
+            if (!textToChunk) {
+                console.log(`   ⚠️  No text found for video: ${video.title}`);
+                continue;
+            }
+            chunks = splitText(textToChunk);
+        }
+
+        console.log(
+            `   🎬 Processing: ${video.title} (${chunks.length} chunks${segments ? ', timed' : ''})`,
+        );
 
         let inserted = 0;
-        for (const content of chunks) {
+        for (const chunk of chunks) {
             try {
-                const embedding = await generateEmbedding(content);
+                const embedding = await generateEmbedding(chunk.text);
                 if (!embedding.length) continue;
                 await sql`
-                    INSERT INTO transcript_chunks (video_id, content, embedding)
-                    VALUES (${video.id}, ${content}, ${toVectorLiteral(embedding)}::vector)
+                    INSERT INTO transcript_chunks (video_id, content, start_time, end_time, embedding)
+                    VALUES (${video.id}, ${chunk.text}, ${chunk.start}, ${chunk.end}, ${toVectorLiteral(embedding)}::vector)
                 `;
                 inserted++;
             } catch (e) {

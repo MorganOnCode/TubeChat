@@ -65,11 +65,14 @@ CREATE TABLE IF NOT EXISTS transcripts (
   raw_text TEXT,
   cleaned_text TEXT,
   summary TEXT,
+  segments JSONB,                    -- timed caption cues [{text, offset(ms), duration(ms)}] for clip/timestamp deep-links
   source TEXT,                       -- youtube_captions, extractor, whisper
   processing_status TEXT DEFAULT 'pending',
   created_at TIMESTAMPTZ DEFAULT now(),
   updated_at TIMESTAMPTZ DEFAULT now()
 );
+-- Idempotent for existing databases (CREATE TABLE IF NOT EXISTS won't add columns).
+ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS segments JSONB;
 
 CREATE TABLE IF NOT EXISTS tags (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -111,6 +114,16 @@ CREATE TABLE IF NOT EXISTS error_reports (
   description TEXT NOT NULL,
   timestamp_seconds INTEGER,
   status TEXT DEFAULT 'pending',
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- answers: persisted Ask results for shareable permalinks (/a/{id}) + answer caching.
+CREATE TABLE IF NOT EXISTS answers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  question TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  sources JSONB NOT NULL DEFAULT '[]'::jsonb,
+  scope JSONB,
   created_at TIMESTAMPTZ DEFAULT now()
 );
 

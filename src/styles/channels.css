@@ -1,0 +1,80 @@
+/* tubechat — Channels (index + detail). Ported from design handoff channels.css.
+   Uses the shared tokens + component classes from globals.css. */
+@layer components {
+  .chx-wrap { padding-top: 22px; padding-bottom: 64px; }
+
+  .chx-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 22px; }
+  .chx-head .lede { margin-top: 8px; }
+  .chx-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .chx-search {
+    display: flex; align-items: center; gap: 9px;
+    background: var(--surface); border: 1px solid var(--line-2);
+    border-radius: 10px; padding: 9px 13px; min-width: 240px;
+  }
+  .chx-search input { flex: 1; border: none; outline: none; background: transparent; color: var(--ink); font-size: 14px; font-family: var(--font-ui); }
+  .chx-search input::placeholder { color: var(--ink-3); }
+
+  .chx-topicbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+
+  .chx-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+
+  .chx-card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 16px; padding: 20px; cursor: pointer;
+    box-shadow: var(--shadow-card);
+    display: flex; flex-direction: column; gap: 14px;
+    transition: border-color .16s, transform .16s;
+    text-decoration: none; color: inherit;
+  }
+  .chx-card:hover { border-color: var(--line-bright); transform: translateY(-2px); }
+  .chx-card .top { display: flex; align-items: center; gap: 13px; }
+  .chx-card .top .meta { min-width: 0; flex: 1; }
+  .chx-card .nm { font-size: 15.5px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink); }
+  .chx-card .hd { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-3); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chx-card .blurb { font-size: 13px; color: var(--ink-2); line-height: 1.5; }
+  .chx-stats { display: flex; gap: 16px; }
+  .chx-stat { display: flex; flex-direction: column; }
+  .chx-stat .n { font-family: var(--font-mono); font-size: 15px; color: var(--ink); }
+  .chx-stat .l { font-size: 10.5px; color: var(--ink-3); text-transform: uppercase; letter-spacing: .05em; margin-top: 1px; }
+  .chx-card .foot { display: flex; gap: 8px; margin-top: auto; padding-top: 4px; }
+  .chx-card .foot .btn { flex: 1; justify-content: center; }
+
+  .live-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--accent); flex: none; box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent) 18%, transparent); }
+
+  /* ---- detail ---- */
+  .chd-hero { display: flex; gap: 26px; align-items: flex-start; padding: 6px 0 26px; }
+  .chd-name { font-family: var(--font-display); font-weight: 440; font-size: 34px; letter-spacing: -0.02em; line-height: 1.1; }
+  .chd-handle { font-family: var(--font-mono); font-size: 13px; color: var(--ink-3); margin-top: 6px; }
+  .chd-blurb { font-size: 14.5px; color: var(--ink-2); line-height: 1.55; margin-top: 12px; max-width: 60ch; }
+  .chd-actions { display: flex; gap: 9px; margin-top: 16px; flex-wrap: wrap; }
+
+  .chd-statbar {
+    display: flex; gap: 36px; flex-wrap: wrap;
+    padding: 18px 0; margin-bottom: 8px;
+    border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  }
+  .chd-statbar .stat .n { font-family: var(--font-mono); font-size: 21px; color: var(--ink); letter-spacing: -0.02em; white-space: nowrap; }
+  .chd-statbar .stat .l { font-size: 12px; color: var(--ink-3); margin-top: 2px; white-space: nowrap; }
+
+  .chd-grid { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 34px; align-items: start; margin-top: 28px; }
+
+  /* ask-this-channel */
+  .askch { background: var(--surface); border: 1px solid var(--line-2); border-radius: 14px; box-shadow: var(--shadow-card); overflow: hidden; margin-bottom: 28px; }
+  .askch-hd { display: flex; align-items: center; gap: 9px; padding: 12px 16px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--ink-2); }
+  .askch-body { padding: 14px 16px; }
+  .askch-ta { width: 100%; border: none; outline: none; resize: none; background: transparent; font-family: var(--font-ui); font-size: 15px; color: var(--ink); min-height: 26px; }
+  .askch-ta::placeholder { color: var(--ink-3); }
+  .askch-bar { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+  .askch-sugg { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+
+  .chd-side .panel-block { margin-bottom: 24px; }
+
+  /* responsive */
+  @media (max-width: 980px) { .chx-grid { grid-template-columns: repeat(2, 1fr); } .chd-grid { grid-template-columns: 1fr; } }
+  @media (max-width: 620px) {
+    .chx-grid { grid-template-columns: 1fr; }
+    .chd-hero { flex-direction: column; gap: 16px; }
+    .chd-name { font-size: 27px; }
+    .chx-head { flex-direction: column; align-items: stretch; }
+  }
+}
