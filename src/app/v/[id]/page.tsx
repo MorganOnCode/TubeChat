@@ -3,10 +3,11 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import "@/styles/video.css";
 import { sql, getVideoByYoutubeId, getVideos } from "@/lib/db";
-import { cleanTranscriptText } from "@/lib/transcript-utils";
+import { cleanTranscriptText, deriveSummaryPoints } from "@/lib/transcript-utils";
 import { channelHref, channelHandle } from "@/lib/channel-utils";
 import { ChannelAvatar } from "@/components/ui/ChannelAvatar";
 import { VideoDetailClient, type TimedSeg } from "@/components/video/VideoDetailClient";
+import { VideoSummary } from "@/components/video/VideoSummary";
 import { VideoAskBox } from "@/components/video/VideoAskBox";
 import { Thumb } from "@/components/ui/Thumb";
 import { formatCount, formatDuration, formatDate } from "@/lib/format";
@@ -79,6 +80,10 @@ export default async function VideoDetailPage({ params, searchParams }: PageProp
           .map((p) => p.trim())
           .filter(Boolean)
       : undefined;
+
+  // "Key takeaways" box — parse the AI bullet summary and anchor each bullet to its
+  // best-matching timed chunk so points become seekable (falls back to plain text).
+  const summaryPoints = deriveSummaryPoints(video.transcript?.summary, timed);
 
   const moreVideos = more.filter((v) => v.youtube_id !== video.youtube_id).slice(0, 3);
 
@@ -173,6 +178,8 @@ export default async function VideoDetailPage({ params, searchParams }: PageProp
             ))}
           </div>
         )}
+
+        <VideoSummary points={summaryPoints} />
 
         <VideoAskBox youtubeId={video.youtube_id} videoTitle={video.title} />
       </VideoDetailClient>

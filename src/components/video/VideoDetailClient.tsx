@@ -1,7 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { formatTimecode } from "@/lib/format";
+
+/**
+ * Lets components rendered inside the video page (e.g. the summary box) drive the
+ * shared YouTube player. Defaults to a no-op so consumers work outside the page too.
+ */
+const SeekContext = createContext<(seconds: number) => void>(() => {});
+export const useSeek = () => useContext(SeekContext);
 
 interface YTPlayer {
   seekTo(seconds: number, allowSeekAhead: boolean): void;
@@ -126,14 +133,14 @@ export function VideoDetailClient({
     };
   }, [youtubeId, startSeconds]);
 
-  const seek = (s: number) => {
+  const seek = useCallback((s: number) => {
     const p = playerRef.current;
     if (p) {
       p.seekTo(s, true);
       p.playVideo();
     }
     setCurrentTime(s);
-  };
+  }, []);
 
   const timed = segments && segments.length > 0 ? segments : null;
 
@@ -180,6 +187,7 @@ export function VideoDetailClient({
   };
 
   return (
+    <SeekContext.Provider value={seek}>
     <div className="vid-grid">
       <div className="vid-left">
         <div className="player">
@@ -270,5 +278,6 @@ export function VideoDetailClient({
         </div>
       </aside>
     </div>
+    </SeekContext.Provider>
   );
 }
