@@ -342,7 +342,7 @@ export async function saveAnswer(
 ): Promise<string> {
     const [row] = await sql<{ id: string }[]>`
         INSERT INTO answers (question, answer, sources)
-        VALUES (${question}, ${answer}, ${JSON.stringify(sources)}::jsonb)
+        VALUES (${question}, ${answer}, ${sql.json(sources as unknown as Parameters<typeof sql.json>[0])})
         RETURNING id
     `;
     return row.id;
@@ -351,11 +351,20 @@ export async function saveAnswer(
 /** Fetch a shared answer by id; null on miss or malformed id. */
 export async function getAnswer(id: string): Promise<SavedAnswer | null> {
     try {
-        const [row] = await sql<SavedAnswer[]>`
+        const [row] = await sql<(Omit<SavedAnswer, "sources"> & { sources: AskSource[] | string })[]>`
             SELECT id, question, answer, sources, created_at
             FROM answers WHERE id = ${id} LIMIT 1
         `;
-        return row ?? null;
+        if (!row) return null;
+        // Legacy rows wrote sources via `${JSON.stringify(x)}::jsonb`, which
+        // double-encodes into a jsonb *string*; recover those into an array.
+        let sources: AskSource[] = [];
+        if (typeof row.sources === "string") {
+            try { sources = JSON.parse(row.sources); } catch { sources = []; }
+        } else if (Array.isArray(row.sources)) {
+            sources = row.sources;
+        }
+        return { ...row, sources };
     } catch {
         return null;
     }
