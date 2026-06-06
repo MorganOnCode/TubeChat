@@ -122,7 +122,7 @@ async function main() {
     }
 
     await sql.begin(async (tx) => {
-      await tx`UPDATE transcripts SET segments = ${JSON.stringify(result.segments)}::jsonb, updated_at = now() WHERE video_id = ${video.id}`;
+      await tx`UPDATE transcripts SET segments = ${sql.json(result.segments as unknown as Parameters<typeof sql.json>[0])}, updated_at = now() WHERE video_id = ${video.id}`;
       await tx`DELETE FROM transcript_chunks WHERE video_id = ${video.id}`;
       for (const r of rows) {
         await tx`

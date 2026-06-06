@@ -42,6 +42,20 @@ function splitText(text: string): Chunk[] {
     return chunks;
 }
 
+/**
+ * Coerce the stored `transcripts.segments` value into a timed-segment array.
+ * Accepts a real jsonb array (correct, current writes) and also recovers from a
+ * legacy jsonb *string* (double-encoded by the old `${JSON.stringify(x)}::jsonb`
+ * pattern). Returns null when there are no usable timed segments.
+ */
+function normalizeSegments(value: TimedSegment[] | string | null | undefined): TimedSegment[] | null {
+    let segs: unknown = value;
+    if (typeof segs === 'string') {
+        try { segs = JSON.parse(segs); } catch { return null; }
+    }
+    return Array.isArray(segs) && segs.length ? (segs as TimedSegment[]) : null;
+}
+
 /** Group timed caption cues into ~CHUNK_SIZE windows, carrying start/end seconds. */
 function chunkSegments(segments: TimedSegment[]): Chunk[] {
     const out: Chunk[] = [];
@@ -90,10 +104,10 @@ async function generateEmbeddings() {
         // defensive so it works before the `segments` column migration is applied.
         let segments: TimedSegment[] | null = null;
         try {
-            const [row] = await sql<{ segments: TimedSegment[] | null }[]>`
+            const [row] = await sql<{ segments: TimedSegment[] | string | null }[]>`
                 SELECT segments FROM transcripts WHERE video_id = ${video.id}
             `;
-            segments = Array.isArray(row?.segments) && row.segments.length ? row.segments : null;
+            segments = normalizeSegments(row?.segments);
         } catch {
             segments = null; // column not present yet
         }

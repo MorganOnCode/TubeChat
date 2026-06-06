@@ -171,13 +171,17 @@ async function ingestVideo(channelDbId: string, ytVideoId: string, skipLlmProces
         `;
 
         // Persist timed caption cues for timestamp deep-links + synced transcripts.
+        // generate-embeddings reads these back to produce TIMED chunks (start/end),
+        // so they must land as a real jsonb array — use sql.json(), NOT
+        // `${JSON.stringify(x)}::jsonb`, which double-encodes into a jsonb *string*
+        // that generate-embeddings can't read (Array.isArray fails → untimed chunks).
         // Wrapped defensively: a no-op on databases where the `segments` column
         // hasn't been added yet (run the ALTER in docker/init-db.sql first).
         if (transcriptResult.segments?.length) {
             try {
                 await sql`
                     UPDATE transcripts
-                    SET segments = ${JSON.stringify(transcriptResult.segments)}::jsonb
+                    SET segments = ${sql.json(transcriptResult.segments as unknown as Parameters<typeof sql.json>[0])}
                     WHERE video_id = ${videoDbId}
                 `;
             } catch {
