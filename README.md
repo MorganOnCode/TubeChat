@@ -25,7 +25,7 @@ YouTube ──ingest──▶ Postgres (pgvector) ◀──reads── Next.js a
 - **App / API** — `src/app/**` (pages + `api/` routes for search, ask, videos, cron)
 - **DB adapter** — `src/lib/db.ts` (postgres.js + pgvector)
 - **Ingestion pipeline** — `src/scripts/{ingest,enrich,generate-embeddings}.ts`, run from a residential IP (laptop) over an SSH tunnel because the VPS datacenter IP is blocked by YouTube
-- **Schema / migrations** — `supabase/` (SQL migrations; the directory name is historical)
+- **Schema / migrations** — `db/` (reference `schema.sql` + hand-applied `migrations/`; the live DB is initialized from `docker/init-db.sql`)
 
 ## Local development
 
