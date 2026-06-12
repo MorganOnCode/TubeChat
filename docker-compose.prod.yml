@@ -13,6 +13,14 @@ services:
     restart: unless-stopped
     ports:
       - "127.0.0.1:5433:5432"
+    # Tuned for the 2GB container so the pgvector index + table stay cached in RAM
+    # (the 512-dim corpus is ~0.46GB). maintenance_work_mem speeds the HNSW build.
+    command: >
+      postgres
+      -c shared_buffers=512MB
+      -c effective_cache_size=1536MB
+      -c maintenance_work_mem=256MB
+      -c work_mem=16MB
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-tubechat}
       POSTGRES_USER: ${POSTGRES_USER:-tubechat}
@@ -29,7 +37,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-    mem_limit: 1g
+    mem_limit: 2g
     cpus: 1.0
     logging:
       driver: "json-file"
@@ -53,6 +61,9 @@ services:
       YOUTUBE_API_KEY: ${YOUTUBE_API_KEY:-}
       SUPADATA_API_KEY: ${SUPADATA_API_KEY:-}
       CRON_SECRET: ${CRON_SECRET:-}
+      # 1536 = serve on the live column; flip to 512 at cutover (after `npm run reembed`
+      # + the v2 HNSW index). The app routes to match_transcript_chunks_v2 automatically.
+      EMBED_DIMS: ${EMBED_DIMS:-1536}
       NEXT_TELEMETRY_DISABLED: "1"
     depends_on:
       postgres:
