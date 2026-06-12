@@ -25,7 +25,11 @@ const FUSE_TOP = 12;            // chunks kept after RRF for synthesis
 const EXTRACT_CARDS = 6;        // quote cards in extractive mode
 // Below this top cosine similarity we treat the archive as not covering the
 // question — return extracts / "not covered" instead of letting the LLM answer.
-const NOT_COVERED_TOP_SIM = 0.22;
+// Tuned from prod query_logs: real matches top out ~0.55-0.60, off-topic ~0.30
+// (text-embedding-3-small gives unrelated text a non-trivial baseline). 0.35
+// catches obvious off-topic; the system-prompt guard handles the borderline.
+// Refine as query_logs accumulates.
+const NOT_COVERED_TOP_SIM = 0.35;
 
 /**
  * Step 1: Reformulate the user's message into an optimal search query
