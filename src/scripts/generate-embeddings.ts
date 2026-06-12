@@ -3,6 +3,7 @@ config();
 
 import { sql, toVectorLiteral } from '../lib/db';
 import { generateEmbedding } from '../lib/llm';
+import { buildEmbedText } from '../lib/retrieval';
 
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 100;
@@ -85,10 +86,11 @@ async function generateEmbeddings() {
     console.log(`🧠 Generating Semantic Embeddings (Limit: ${limit})...`);
 
     // Completed videos that have a transcript but no chunks yet.
-    const videos = await sql<{ id: string; title: string; cleaned_text: string | null; raw_text: string | null }[]>`
-        SELECT v.id, v.title, t.cleaned_text, t.raw_text
+    const videos = await sql<{ id: string; title: string; published_at: string | null; channel_name: string | null; cleaned_text: string | null; raw_text: string | null }[]>`
+        SELECT v.id, v.title, v.published_at, c.name AS channel_name, t.cleaned_text, t.raw_text
         FROM videos v
         JOIN transcripts t ON t.video_id = v.id
+        LEFT JOIN channels c ON c.id = v.channel_id
         WHERE v.status = 'completed'
           AND NOT EXISTS (SELECT 1 FROM transcript_chunks tc WHERE tc.video_id = v.id)
           ${videoIdArg ? sql`AND v.id = ${videoIdArg}` : sql``}
@@ -131,11 +133,23 @@ async function generateEmbeddings() {
         let inserted = 0;
         for (const chunk of chunks) {
             try {
-                const embedding = await generateEmbedding(chunk.text);
-                if (!embedding.length) continue;
+                // Embed the contextual-prefixed text (channel/title/date) into BOTH the
+                // live 1536 column and the 512 shadow column, so new videos are searchable
+                // before and after the EMBED_DIMS cutover. The displayed `content` stays raw.
+                const embedText = buildEmbedText(
+                    { channel: video.channel_name, title: video.title, publishedAt: video.published_at },
+                    chunk.text,
+                );
+                const [emb1536, emb512] = await Promise.all([
+                    generateEmbedding(embedText, 1536),
+                    generateEmbedding(embedText, 512),
+                ]);
+                if (!emb1536.length) continue;
+                const v512 = emb512.length ? toVectorLiteral(emb512) : null;
                 await sql`
-                    INSERT INTO transcript_chunks (video_id, content, start_time, end_time, embedding)
-                    VALUES (${video.id}, ${chunk.text}, ${chunk.start}, ${chunk.end}, ${toVectorLiteral(embedding)}::vector)
+                    INSERT INTO transcript_chunks (video_id, content, start_time, end_time, embedding, embedding_v2)
+                    VALUES (${video.id}, ${chunk.text}, ${chunk.start}, ${chunk.end},
+                            ${toVectorLiteral(emb1536)}::vector, ${v512}::vector)
                 `;
                 inserted++;
             } catch (e) {

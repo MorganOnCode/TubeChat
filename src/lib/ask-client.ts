@@ -5,6 +5,8 @@ export interface AskRequest {
   history?: { role: "user" | "assistant"; content: string }[];
   videoId?: string;
   channelId?: string;
+  /** "extracts" = no-LLM quote cards (free-tier / fallback); default "answer". */
+  mode?: "answer" | "extracts";
 }
 
 /**

@@ -1,11 +1,35 @@
 import { generateEmbedding, getClient } from '@/lib/llm';
 import { NextRequest } from 'next/server';
-import { sql, matchTranscriptChunks } from '@/lib/db';
+import {
+    sql,
+    matchChunks,
+    ftsChunks,
+    getCorpusVersion,
+    getCachedQuery,
+    putCachedQuery,
+    logQuery,
+    type SemanticChunk,
+} from '@/lib/db';
+import { rrfFuse, normalizeQuestion, scopeKey, cacheKey } from '@/lib/retrieval';
+import type { AskSource } from '@/lib/ask-types';
 
 interface Message {
     role: 'user' | 'assistant';
     content: string;
 }
+
+// Retrieval tuning -----------------------------------------------------------
+const VECTOR_FETCH = 30;        // vector arm candidates (more when scoped, below)
+const FTS_FETCH = 30;           // keyword arm candidates
+const FUSE_TOP = 12;            // chunks kept after RRF for synthesis
+const EXTRACT_CARDS = 6;        // quote cards in extractive mode
+// Below this top cosine similarity we treat the archive as not covering the
+// question — return extracts / "not covered" instead of letting the LLM answer.
+// Tuned from prod query_logs: real matches top out ~0.55-0.60, off-topic ~0.30
+// (text-embedding-3-small gives unrelated text a non-trivial baseline). 0.35
+// catches obvious off-topic; the system-prompt guard handles the borderline.
+// Refine as query_logs accumulates.
+const NOT_COVERED_TOP_SIM = 0.35;
 
 /**
  * Step 1: Reformulate the user's message into an optimal search query
@@ -58,20 +82,33 @@ Return JSON only: {"searchQuery": "...", "needsSearch": true/false, "directRespo
 }
 
 /**
- * Step 2: Multi-strategy retrieval — vector search + FTS for better recall
+ * Whether to spend an LLM call reformulating. First-turn, already-specific
+ * questions are sent to retrieval as-is (saves one of the two gpt-4o-mini calls);
+ * follow-ups (history present) and short/vague inputs still get reformulated.
+ */
+function shouldReformulate(userMessage: string, history: Message[]): boolean {
+    if (history.length > 0) return true;                 // follow-up: needs context resolution
+    const words = userMessage.trim().split(/\s+/).filter(Boolean);
+    if (words.length < 3) return true;                   // too terse — let the LLM expand/greet-detect
+    if (userMessage.trim().length < 12) return true;
+    return false;                                        // specific first-turn question — embed directly
+}
+
+/**
+ * Step 2: Hybrid retrieval — vector (semantic) + FTS (keyword) fused with RRF.
+ * Returns the fused top chunks, hydrated video metadata, and the top raw cosine
+ * similarity (the confidence signal for the not-covered gate).
  */
 async function retrieveContext(
     searchQuery: string,
     channelId?: string,
     videoId?: string
-): Promise<{ chunks: any[]; videos: Map<string, any> }> {
-    // Generate embedding for vector search
+): Promise<{ chunks: SemanticChunk[]; videos: Map<string, any>; topSimilarity: number }> {
     const embedding = await generateEmbedding(searchQuery);
-    if (embedding.length === 0) return { chunks: [], videos: new Map() };
+    if (embedding.length === 0) return { chunks: [], videos: new Map(), topSimilarity: 0 };
 
-    // Scope to specific video/channel if requested
+    // Resolve scope → set of video ids (if a video/channel filter is active).
     let scopeVideoIds: string[] | null = null;
-
     if (videoId) {
         const rows = await sql<{ id: string }[]>`SELECT id FROM videos WHERE youtube_id = ${videoId} LIMIT 1`;
         if (rows.length) scopeVideoIds = [rows[0].id];
@@ -79,29 +116,35 @@ async function retrieveContext(
         const rows = await sql<{ id: string }[]>`SELECT id FROM videos WHERE channel_id = ${channelId}`;
         scopeVideoIds = rows.map((r) => r.id);
     }
+    const scoped = !!(scopeVideoIds && scopeVideoIds.length);
 
-    // Vector search — cast wider net
-    let chunks: any[];
+    // Vector arm (threshold 0 → top-k with real similarities for the gate) and
+    // keyword arm, in parallel. Over-fetch the vector arm when scoped so we still
+    // have candidates after the scope filter.
+    let vectorHits: SemanticChunk[] = [];
+    let ftsHits: SemanticChunk[] = [];
     try {
-        chunks = await matchTranscriptChunks(embedding, 0.3, 30);
+        [vectorHits, ftsHits] = await Promise.all([
+            matchChunks(embedding, 0.0, scoped ? VECTOR_FETCH * 2 : VECTOR_FETCH),
+            ftsChunks(searchQuery, FTS_FETCH, scopeVideoIds),
+        ]);
     } catch (e) {
-        console.error('Vector search error:', e);
-        return { chunks: [], videos: new Map() };
+        console.error('Hybrid retrieval error:', e);
+        return { chunks: [], videos: new Map(), topSimilarity: 0 };
     }
 
-    // Filter by scope if needed
-    if (scopeVideoIds) {
-        const scopeSet = new Set(scopeVideoIds);
-        chunks = chunks.filter((c: any) => scopeSet.has(c.video_id));
+    if (scoped) {
+        const scopeSet = new Set(scopeVideoIds as string[]);
+        vectorHits = vectorHits.filter((c) => scopeSet.has(c.video_id));
     }
 
-    // Take top 12 chunks for context (balance between coverage and token cost)
-    chunks = chunks.slice(0, 12);
+    const topSimilarity = vectorHits.reduce((m, c) => Math.max(m, c.similarity ?? 0), 0);
 
-    if (chunks.length === 0) return { chunks: [], videos: new Map() };
+    // RRF fuse the two ranked lists → top chunks for synthesis / extracts.
+    const fused = rrfFuse([vectorHits, ftsHits], FUSE_TOP);
+    if (fused.length === 0) return { chunks: [], videos: new Map(), topSimilarity };
 
-    // Fetch video details
-    const videoIds = [...new Set(chunks.map((c: any) => c.video_id))] as string[];
+    const videoIds = [...new Set(fused.map((c) => c.video_id))];
     const videos = await sql<any[]>`
         SELECT v.id, v.youtube_id, v.title, v.published_at,
                c.id AS channel_id, c.name AS channel_name
@@ -109,10 +152,9 @@ async function retrieveContext(
         LEFT JOIN channels c ON c.id = v.channel_id
         WHERE v.id IN ${sql(videoIds)}
     `;
+    const videoMap = new Map(videos.map((v: any) => [v.id, v]));
 
-    const videoMap = new Map(videos.map((v: any) => [v.id, { ...v, channel_name: v.channel_name }]));
-
-    return { chunks, videos: videoMap };
+    return { chunks: fused, videos: videoMap, topSimilarity };
 }
 
 const SYSTEM_PROMPT = `You are ScriptTube AI, an expert research assistant with access to a database of 3,600+ transcribed YouTube videos about UFOs, UAPs, NHI (non-human intelligence), consciousness, government disclosure, ancient civilizations, and related topics.
@@ -126,9 +168,10 @@ Your personality:
 
 Response guidelines:
 - Use the transcript excerpts as your primary knowledge base
+- IMPORTANT: If the user's message is unrelated to the excerpts — random or nonsensical text, or a topic the excerpts plainly don't address — reply ONLY with "I don't have transcript data on that specifically." Do not describe, summarize, or list the excerpts, do not answer the off-topic part, and never mention that you were given excerpts or transcript context.
 - Cite sources inline using [Source N] — always include at least one citation
 - If sources disagree, present both perspectives
-- If the transcripts don't cover something, say "I don't have transcript data on that specifically, but [related info]..."
+- If the excerpts partially cover the topic, answer what they support and note "I don't have transcript data on [the rest] specifically." Never invent the gap.
 - Keep responses focused but thorough — 2-4 paragraphs for most questions
 - Use bullet points for lists, comparisons, or multiple claims
 - For follow-up questions, build on the conversation naturally
@@ -143,11 +186,11 @@ You do NOT:
 /** Build the chat messages (system + history + current turn with context). */
 function buildMessages(
     userMessage: string,
-    chunks: any[],
+    chunks: SemanticChunk[],
     videoMap: Map<string, any>,
     conversationHistory: Message[]
 ): any[] {
-    const contextParts = chunks.map((chunk: any, i: number) => {
+    const contextParts = chunks.map((chunk, i) => {
         const video = videoMap.get(chunk.video_id);
         const label = video
             ? `[Source ${i + 1}: "${video.title}" by ${video.channel_name}, ${video.published_at ? new Date(video.published_at).toISOString().split('T')[0] : 'unknown date'}]`
@@ -170,56 +213,92 @@ function buildMessages(
 }
 
 /** Deduplicated source list — one clip per video, carrying its start time + deep-link URL. */
-function buildSources(chunks: any[], videoMap: Map<string, any>): any[] {
+function buildSources(chunks: SemanticChunk[], videoMap: Map<string, any>): AskSource[] {
     const seenVideoIds = new Set<string>();
     return chunks
-        .map((chunk: any) => {
+        .map((chunk): AskSource | null => {
             const video = videoMap.get(chunk.video_id);
             if (!video || seenVideoIds.has(video.youtube_id)) return null;
             seenVideoIds.add(video.youtube_id);
-            const startSeconds = typeof chunk.start_time === "number" ? chunk.start_time : null;
-            const url = `/v/${video.youtube_id}${startSeconds != null ? `?t=${startSeconds}` : ""}`;
+            const startSeconds = typeof chunk.start_time === 'number' ? chunk.start_time : null;
+            const url = `/v/${video.youtube_id}${startSeconds != null ? `?t=${startSeconds}` : ''}`;
             return {
                 videoId: video.youtube_id,
                 channelId: video.channel_id ?? null,
                 title: video.title,
                 channel: video.channel_name,
                 publishedAt: video.published_at,
-                similarity: Math.round(chunk.similarity * 100),
+                similarity: Math.round((chunk.similarity ?? 0) * 100),
                 snippet: chunk.content.slice(0, 200),
                 startSeconds,
                 url,
             };
         })
-        .filter(Boolean)
+        .filter((s): s is AskSource => s !== null)
         .slice(0, 8);
+}
+
+/** Extractive quote cards (no LLM): top fused chunks with longer snippets. */
+function buildExtracts(chunks: SemanticChunk[], videoMap: Map<string, any>): AskSource[] {
+    const seen = new Set<string>();
+    const out: AskSource[] = [];
+    for (const chunk of chunks) {
+        const video = videoMap.get(chunk.video_id);
+        if (!video) continue;
+        const startSeconds = typeof chunk.start_time === 'number' ? chunk.start_time : null;
+        const dedupe = `${video.youtube_id}:${startSeconds ?? ''}`;
+        if (seen.has(dedupe)) continue;
+        seen.add(dedupe);
+        out.push({
+            videoId: video.youtube_id,
+            channelId: video.channel_id ?? null,
+            title: video.title,
+            channel: video.channel_name,
+            publishedAt: video.published_at,
+            similarity: Math.round((chunk.similarity ?? 0) * 100),
+            snippet: chunk.content.slice(0, 360),
+            startSeconds,
+            url: `/v/${video.youtube_id}${startSeconds != null ? `?t=${startSeconds}` : ''}`,
+        });
+        if (out.length >= EXTRACT_CARDS) break;
+    }
+    return out;
 }
 
 /**
  * Streams the answer as newline-delimited JSON events:
  *   {type:"stage", stage:"searching"|"found"|"reading"|"answering", count?}
  *   {type:"sources", sources:[...]}
+ *   {type:"extracts", extracts:[...]}        // extractive (no-LLM) mode
  *   {type:"token", text:"..."}
- *   {type:"done", tokensUsed, searchQuery}
+ *   {type:"done", tokensUsed, searchQuery, cached?, mode?}
  *   {type:"error", message}
  */
 export async function POST(request: NextRequest) {
-    let body: { question?: string; channelId?: string; videoId?: string; history?: Message[] };
+    let body: { question?: string; channelId?: string; videoId?: string; history?: Message[]; mode?: 'answer' | 'extracts' };
     try {
         body = await request.json();
     } catch {
         return Response.json({ error: 'Invalid request body' }, { status: 400 });
     }
 
-    const { question, channelId, videoId, history = [] } = body;
+    const { question, channelId, videoId, history = [], mode = 'answer' } = body;
     if (!question || typeof question !== 'string' || question.trim().length < 1) {
         return Response.json({ error: 'Question too short' }, { status: 400 });
     }
 
     const userMessage = question.trim().slice(0, 1000);
     const conversationHistory: Message[] = (history || []).slice(-10);
+    const wantsExtracts = mode === 'extracts';
     const openai = getClient();
     const encoder = new TextEncoder();
+    const startedAt = Date.now();
+
+    // Cache + log identity. Only first-turn questions are cacheable (answers with
+    // history depend on the conversation). Scope keys the cache per video/channel.
+    const sKey = scopeKey({ channelId, videoId });
+    const normalized = normalizeQuestion(userMessage);
+    const cacheable = conversationHistory.length === 0;
 
     const stream = new ReadableStream({
         async start(controller) {
@@ -227,22 +306,88 @@ export async function POST(request: NextRequest) {
             try {
                 send({ type: 'stage', stage: 'searching' });
 
-                const { searchQuery, needsSearch, directResponse } = await reformulateQuery(
-                    userMessage,
-                    conversationHistory,
-                );
+                // --- Cache lookup (first-turn only) ---------------------------------
+                let corpusVersion = '1';
+                let key = '';
+                if (cacheable) {
+                    corpusVersion = await getCorpusVersion();
+                    key = cacheKey(corpusVersion, sKey, mode, normalized);
+                    const cached = await getCachedQuery(key);
+                    if (cached) {
+                        const p = cached.payload;
+                        if (cached.mode === 'extracts') {
+                            send({ type: 'stage', stage: 'found', count: p.extracts?.length ?? 0 });
+                            send({ type: 'extracts', extracts: p.extracts ?? [] });
+                        } else {
+                            send({ type: 'stage', stage: 'found', count: p.sources?.length ?? 0 });
+                            send({ type: 'sources', sources: p.sources ?? [] });
+                            send({ type: 'stage', stage: 'answering' });
+                            if (p.answer) send({ type: 'token', text: p.answer });
+                        }
+                        send({ type: 'done', tokensUsed: 0, searchQuery: p.searchQuery ?? null, cached: true, mode: cached.mode });
+                        controller.close();
+                        void logQuery({ question: userMessage, searchQuery: p.searchQuery ?? null, scopeKey: sKey, mode: cached.mode, cacheHit: true, latencyMs: Date.now() - startedAt });
+                        return;
+                    }
+                }
 
-                // Greeting / chitchat → stream the direct response, no sources.
+                // --- Reformulate (skipped for specific first-turn questions) --------
+                let searchQuery = userMessage;
+                let needsSearch = true;
+                let directResponse: string | undefined;
+                if (shouldReformulate(userMessage, conversationHistory)) {
+                    const r = await reformulateQuery(userMessage, conversationHistory);
+                    searchQuery = r.searchQuery || userMessage;
+                    needsSearch = r.needsSearch;
+                    directResponse = r.directResponse;
+                }
+
+                // Greeting / chitchat → direct response, no search/cache.
                 if (!needsSearch && directResponse) {
                     send({ type: 'sources', sources: [] });
                     send({ type: 'stage', stage: 'answering' });
                     send({ type: 'token', text: directResponse });
-                    send({ type: 'done', tokensUsed: 0, searchQuery: null });
+                    send({ type: 'done', tokensUsed: 0, searchQuery: null, mode: 'direct' });
                     controller.close();
+                    void logQuery({ question: userMessage, scopeKey: sKey, mode: 'direct', cacheHit: false, latencyMs: Date.now() - startedAt });
                     return;
                 }
 
-                const { chunks, videos } = await retrieveContext(searchQuery, channelId, videoId);
+                // --- Hybrid retrieval ----------------------------------------------
+                const { chunks, videos, topSimilarity } = await retrieveContext(searchQuery, channelId, videoId);
+                const chunkIds = chunks.map((c) => c.id);
+
+                // --- Extractive mode OR low-confidence fallback (no LLM) ------------
+                const lowConfidence = topSimilarity < NOT_COVERED_TOP_SIM;
+                if (wantsExtracts || lowConfidence) {
+                    const extracts = buildExtracts(chunks, videos);
+
+                    if (extracts.length === 0) {
+                        // Genuinely not covered.
+                        send({ type: 'sources', sources: [] });
+                        send({ type: 'stage', stage: 'answering' });
+                        send({ type: 'token', text: "I don't have transcript data on that specifically. Try rephrasing, or ask about a topic the archive covers (UFOs/UAP, disclosure, NHI, specific guests or channels)." });
+                        send({ type: 'done', tokensUsed: 0, searchQuery, mode: 'not_covered' });
+                        controller.close();
+                        void logQuery({ question: userMessage, searchQuery, scopeKey: sKey, mode: 'not_covered', cacheHit: false, chunkIds, topScore: topSimilarity, latencyMs: Date.now() - startedAt });
+                        return;
+                    }
+
+                    send({ type: 'stage', stage: 'found', count: extracts.length });
+                    send({ type: 'extracts', extracts });
+                    const resolvedMode = wantsExtracts ? 'extracts' : 'not_covered';
+                    send({ type: 'done', tokensUsed: 0, searchQuery, mode: resolvedMode });
+                    controller.close();
+
+                    // Cache only an explicit extracts request (the fallback is confidence-dependent).
+                    if (cacheable && wantsExtracts) {
+                        void putCachedQuery({ cacheKey: key, corpusVersion, scopeKey: sKey, normalizedQuestion: normalized, mode: 'extracts', payload: { extracts, searchQuery, topSimilarity } });
+                    }
+                    void logQuery({ question: userMessage, searchQuery, scopeKey: sKey, mode: resolvedMode, cacheHit: false, chunkIds, topScore: topSimilarity, latencyMs: Date.now() - startedAt });
+                    return;
+                }
+
+                // --- Synthesized answer --------------------------------------------
                 const sources = buildSources(chunks, videos);
                 send({ type: 'stage', stage: 'found', count: sources.length });
                 send({ type: 'sources', sources });
@@ -261,20 +406,26 @@ export async function POST(request: NextRequest) {
                 });
 
                 let tokensUsed = 0;
-                let emitted = false;
+                let answer = '';
                 for await (const part of completion) {
                     const delta = part.choices?.[0]?.delta?.content;
                     if (delta) {
-                        emitted = true;
+                        answer += delta;
                         send({ type: 'token', text: delta });
                     }
                     if (part.usage?.total_tokens) tokensUsed = part.usage.total_tokens;
                 }
-                if (!emitted) {
+                if (!answer) {
                     send({ type: 'token', text: 'Sorry, I had trouble generating a response. Try rephrasing your question.' });
                 }
-                send({ type: 'done', tokensUsed, searchQuery });
+                send({ type: 'done', tokensUsed, searchQuery, mode: 'answer' });
                 controller.close();
+
+                // Write-through to the cache (first-turn answers only).
+                if (cacheable && answer) {
+                    void putCachedQuery({ cacheKey: key, corpusVersion, scopeKey: sKey, normalizedQuestion: normalized, mode: 'answer', payload: { answer, sources, searchQuery, topSimilarity } });
+                }
+                void logQuery({ question: userMessage, searchQuery, scopeKey: sKey, mode: 'answer', cacheHit: false, chunkIds, topScore: topSimilarity, answerChars: answer.length, tokensUsed, latencyMs: Date.now() - startedAt });
             } catch (error) {
                 console.error('Ask API stream error:', error);
                 send({ type: 'error', message: 'Something went wrong generating the answer. Please retry.' });

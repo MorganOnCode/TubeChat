@@ -176,9 +176,18 @@ export async function processTranscript(rawText: string): Promise<{
 }
 
 /**
- * Generate a vector embedding for the given text
+ * Active embedding dimensionality. text-embedding-3-small is Matryoshka-trained,
+ * so the API returns a re-normalized vector at any `dimensions`. We index/query at
+ * 512 (corpus fits in RAM, ~1-3% MTEB-relative drop) once cut over; default 1536
+ * keeps the current behaviour until the re-embed + EMBED_DIMS=512 flip is deployed.
  */
-export async function generateEmbedding(text: string): Promise<number[]> {
+export const EMBED_DIMS = Number(process.env.EMBED_DIMS ?? 1536);
+
+/**
+ * Generate a vector embedding for the given text.
+ * `dims` defaults to EMBED_DIMS; the re-embed script passes 512 explicitly.
+ */
+export async function generateEmbedding(text: string, dims: number = EMBED_DIMS): Promise<number[]> {
     const client = getClient();
 
     const cleanText = text.replace(/\n/g, ' ').trim();
@@ -187,8 +196,30 @@ export async function generateEmbedding(text: string): Promise<number[]> {
     const response = await client.embeddings.create({
         model: 'text-embedding-3-small',
         input: cleanText,
-        dimensions: 1536
+        dimensions: dims,
     });
 
     return response.data[0].embedding;
+}
+
+/**
+ * Batch-embed many texts in a single request (OpenAI accepts an input array).
+ * Used by the re-embed/ingest scripts — embedding 225k chunks one HTTP request
+ * at a time would take hours; batches of a few hundred cut it to minutes.
+ * Returns vectors in input order; empty inputs yield [].
+ */
+export async function generateEmbeddingsBatch(texts: string[], dims: number = EMBED_DIMS): Promise<number[][]> {
+    const client = getClient();
+    const cleaned = texts.map((t) => t.replace(/\n/g, ' ').trim());
+    if (cleaned.every((t) => !t)) return cleaned.map(() => []);
+
+    const response = await client.embeddings.create({
+        model: 'text-embedding-3-small',
+        input: cleaned,
+        dimensions: dims,
+    });
+
+    // Re-order by `index` defensively (the API returns input order, but be safe).
+    const byIndex = [...response.data].sort((a, b) => a.index - b.index);
+    return byIndex.map((d) => d.embedding);
 }

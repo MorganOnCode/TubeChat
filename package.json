@@ -11,6 +11,8 @@
     "enrich": "tsx src/scripts/enrich.ts",
     "generate-embeddings": "tsx src/scripts/generate-embeddings.ts",
     "backfill-timestamps": "tsx src/scripts/backfill-timestamps.ts",
+    "reembed": "tsx src/scripts/reembed.ts",
+    "prewarm": "tsx src/scripts/prewarm-cache.ts",
     "sync": "bash scripts/sync.sh"
   },
   "dependencies": {

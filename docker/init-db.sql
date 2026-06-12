@@ -104,6 +104,9 @@ CREATE TABLE IF NOT EXISTS transcript_chunks (
   embedding vector(1536),
   created_at TIMESTAMPTZ DEFAULT now()
 );
+-- Shadow column for the 512-dim re-embed (feat/search-efficiency). Additive: the
+-- 1536 `embedding` column keeps serving until EMBED_DIMS flips to 512 at cutover.
+ALTER TABLE transcript_chunks ADD COLUMN IF NOT EXISTS embedding_v2 vector(512);
 
 -- error_reports: referenced by the app (submitErrorReport) but was never
 -- created in the live Supabase DB. Added here so the feature works going forward.
@@ -125,6 +128,48 @@ CREATE TABLE IF NOT EXISTS answers (
   sources JSONB NOT NULL DEFAULT '[]'::jsonb,
   scope JSONB,
   created_at TIMESTAMPTZ DEFAULT now()
+);
+
+-- app_meta: small key/value config. `corpus_version` is bumped by the re-embed
+-- script and is part of the query_cache key, so a re-embed invalidates the cache.
+CREATE TABLE IF NOT EXISTS app_meta (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TIMESTAMPTZ DEFAULT now()
+);
+INSERT INTO app_meta (key, value) VALUES ('corpus_version', '1')
+  ON CONFLICT (key) DO NOTHING;
+
+-- query_cache: response cache for the ask box. Hit = zero LLM, instant. Curated
+-- rows (pre-warmed suggested questions) serve free to free-tier users.
+CREATE TABLE IF NOT EXISTS query_cache (
+  id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  cache_key           TEXT NOT NULL UNIQUE,   -- sha256(corpus_version|scope|mode|question)
+  corpus_version      TEXT NOT NULL,
+  scope_key           TEXT NOT NULL DEFAULT '',
+  normalized_question TEXT NOT NULL,
+  mode                TEXT NOT NULL DEFAULT 'answer',  -- answer | extracts
+  payload             JSONB NOT NULL,                  -- { answer, sources, extracts, searchQuery, topSimilarity }
+  curated             BOOLEAN NOT NULL DEFAULT false,
+  hits                INTEGER NOT NULL DEFAULT 0,
+  created_at          TIMESTAMPTZ DEFAULT now(),
+  last_used_at        TIMESTAMPTZ DEFAULT now()
+);
+
+-- query_logs: every ask query (eval set + "what do users ask" + cache-hit telemetry).
+CREATE TABLE IF NOT EXISTS query_logs (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  question     TEXT NOT NULL,
+  search_query TEXT,
+  scope_key    TEXT,
+  mode         TEXT,            -- answer | extracts | not_covered | direct | cached
+  cache_hit    BOOLEAN NOT NULL DEFAULT false,
+  chunk_ids    JSONB,
+  top_score    REAL,
+  answer_chars INTEGER,
+  tokens_used  INTEGER,
+  latency_ms   INTEGER,
+  created_at   TIMESTAMPTZ DEFAULT now()
 );
 
 -- =============================================================================
@@ -150,6 +195,13 @@ CREATE INDEX IF NOT EXISTS idx_videos_search
 -- pgvector ANN index (ivfflat tolerates an empty table on first run)
 CREATE INDEX IF NOT EXISTS idx_transcript_chunks_embedding
   ON transcript_chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+
+-- Chunk-level FTS (Phase B hybrid retrieval) + query log time index (Phase D).
+CREATE INDEX IF NOT EXISTS idx_transcript_chunks_content_fts
+  ON transcript_chunks USING GIN (to_tsvector('english', content));
+CREATE INDEX IF NOT EXISTS idx_query_logs_created ON query_logs(created_at DESC);
+-- The 512-dim ANN index (idx_transcript_chunks_embedding_v2, hnsw) is created at
+-- cutover, after `npm run reembed` backfills embedding_v2 — see search_efficiency.sql.
 
 -- =============================================================================
 -- updated_at trigger
@@ -204,6 +256,38 @@ BEGIN
   FROM transcript_chunks
   WHERE 1 - (transcript_chunks.embedding <=> query_embedding) > match_threshold
   ORDER BY transcript_chunks.embedding <=> query_embedding
+  LIMIT match_count;
+END;
+$$;
+
+-- 512-dim variant over the shadow column (feat/search-efficiency). Used once
+-- EMBED_DIMS=512; the app routes to this automatically when query vectors are 512-dim.
+CREATE OR REPLACE FUNCTION match_transcript_chunks_v2 (
+  query_embedding vector(512),
+  match_threshold float,
+  match_count int
+)
+RETURNS TABLE (
+  id UUID,
+  video_id UUID,
+  content TEXT,
+  start_time INTEGER,
+  similarity float
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    tc.id,
+    tc.video_id,
+    tc.content,
+    tc.start_time,
+    1 - (tc.embedding_v2 <=> query_embedding) AS similarity
+  FROM transcript_chunks tc
+  WHERE tc.embedding_v2 IS NOT NULL
+    AND 1 - (tc.embedding_v2 <=> query_embedding) > match_threshold
+  ORDER BY tc.embedding_v2 <=> query_embedding
   LIMIT match_count;
 END;
 $$;
