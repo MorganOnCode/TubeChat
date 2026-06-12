@@ -18,7 +18,10 @@ export type AskEvent =
   | { type: "stage"; stage: AskStage; count?: number }
   | { type: "sources"; sources: AskSource[] }
   | { type: "token"; text: string }
-  | { type: "done"; tokensUsed: number; searchQuery: string | null }
+  // Extractive mode (no LLM): the top fused chunks rendered as quote cards.
+  // Used as the free-tier serve, the low-confidence fallback, and Phase-0 search.
+  | { type: "extracts"; extracts: AskSource[] }
+  | { type: "done"; tokensUsed: number; searchQuery: string | null; cached?: boolean; mode?: string }
   | { type: "error"; message: string };
 
 export const STAGE_LABEL: Record<AskStage, string> = {

@@ -168,6 +168,54 @@ export async function matchTranscriptChunks(
     `;
 }
 
+/**
+ * Dimension-aware vector search. Routes to the 512-dim shadow column + RPC when
+ * the query vector is 512-dim (post-cutover), else the live 1536 column. This is
+ * what makes the EMBED_DIMS flip a single env change with no code edit.
+ */
+export async function matchChunks(
+    embedding: number[],
+    matchThreshold: number,
+    matchCount: number
+): Promise<SemanticChunk[]> {
+    if (!embedding.length) return [];
+    const vec = toVectorLiteral(embedding);
+    if (embedding.length === 512) {
+        return await sql<SemanticChunk[]>`
+            SELECT * FROM match_transcript_chunks_v2(${vec}::vector, ${matchThreshold}, ${matchCount})
+        `;
+    }
+    return await sql<SemanticChunk[]>`
+        SELECT * FROM match_transcript_chunks(${vec}::vector, ${matchThreshold}, ${matchCount})
+    `;
+}
+
+/**
+ * Chunk-level keyword search (BM25-ish via tsvector + ts_rank). The keyword arm of
+ * hybrid retrieval — catches names/acronyms ("Ross Coulthart", "MFM", "NHI") that
+ * pure vector search misses. `similarity` here is ts_rank (for RRF ordering only,
+ * not a cosine score). Optionally scoped to a set of video ids.
+ */
+export async function ftsChunks(
+    query: string,
+    matchCount: number,
+    scopeVideoIds?: string[] | null
+): Promise<SemanticChunk[]> {
+    const q = query.trim();
+    if (!q) return [];
+    const scoped = !!(scopeVideoIds && scopeVideoIds.length);
+    return await sql<SemanticChunk[]>`
+        SELECT tc.id, tc.video_id, tc.content, tc.start_time,
+               ts_rank(to_tsvector('english', tc.content),
+                       websearch_to_tsquery('english', ${q})) AS similarity
+        FROM transcript_chunks tc
+        WHERE to_tsvector('english', tc.content) @@ websearch_to_tsquery('english', ${q})
+          ${scoped ? sql`AND tc.video_id IN ${sql(scopeVideoIds as string[])}` : sql``}
+        ORDER BY similarity DESC
+        LIMIT ${matchCount}
+    `;
+}
+
 // ---------------------------------------------------------------------------
 // App helpers (used by pages + /api routes). No `client` argument.
 // ---------------------------------------------------------------------------
@@ -367,5 +415,109 @@ export async function getAnswer(id: string): Promise<SavedAnswer | null> {
         return { ...row, sources };
     } catch {
         return null;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Response cache + corpus version + query log (feat/search-efficiency)
+// ---------------------------------------------------------------------------
+
+/** Current corpus version — part of the cache key, bumped by the re-embed script. */
+export async function getCorpusVersion(): Promise<string> {
+    try {
+        const [row] = await sql<{ value: string }[]>`
+            SELECT value FROM app_meta WHERE key = 'corpus_version' LIMIT 1
+        `;
+        return row?.value ?? "1";
+    } catch {
+        return "1";
+    }
+}
+
+export interface CachedPayload {
+    answer?: string;
+    sources?: AskSource[];
+    extracts?: AskSource[];
+    searchQuery?: string | null;
+    topSimilarity?: number;
+}
+export interface CachedQuery {
+    mode: string;
+    payload: CachedPayload;
+}
+
+/** Cache lookup by key. On hit, bumps hits/last_used (fire-and-forget). */
+export async function getCachedQuery(cacheKey: string): Promise<CachedQuery | null> {
+    try {
+        const [row] = await sql<{ mode: string; payload: CachedPayload | string }[]>`
+            SELECT mode, payload FROM query_cache WHERE cache_key = ${cacheKey} LIMIT 1
+        `;
+        if (!row) return null;
+        void sql`UPDATE query_cache SET hits = hits + 1, last_used_at = now() WHERE cache_key = ${cacheKey}`
+            .catch(() => {});
+        const payload = typeof row.payload === "string"
+            ? (JSON.parse(row.payload) as CachedPayload)
+            : row.payload;
+        return { mode: row.mode, payload };
+    } catch {
+        return null;
+    }
+}
+
+/** Write-through to the cache (upsert). Curated rows survive a non-curated re-write. */
+export async function putCachedQuery(args: {
+    cacheKey: string;
+    corpusVersion: string;
+    scopeKey: string;
+    normalizedQuestion: string;
+    mode: string;
+    payload: CachedPayload;
+    curated?: boolean;
+}): Promise<void> {
+    try {
+        await sql`
+            INSERT INTO query_cache
+                (cache_key, corpus_version, scope_key, normalized_question, mode, payload, curated)
+            VALUES (${args.cacheKey}, ${args.corpusVersion}, ${args.scopeKey},
+                    ${args.normalizedQuestion}, ${args.mode},
+                    ${sql.json(args.payload as unknown as Parameters<typeof sql.json>[0])},
+                    ${args.curated ?? false})
+            ON CONFLICT (cache_key) DO UPDATE
+              SET payload = EXCLUDED.payload,
+                  mode    = EXCLUDED.mode,
+                  curated = query_cache.curated OR EXCLUDED.curated,
+                  last_used_at = now()
+        `;
+    } catch (e) {
+        console.error("query_cache write failed:", e);
+    }
+}
+
+/** Append a query log row (eval set + telemetry). Fire-and-forget; never throws. */
+export async function logQuery(row: {
+    question: string;
+    searchQuery?: string | null;
+    scopeKey?: string;
+    mode: string;
+    cacheHit: boolean;
+    chunkIds?: string[];
+    topScore?: number | null;
+    answerChars?: number;
+    tokensUsed?: number;
+    latencyMs?: number;
+}): Promise<void> {
+    try {
+        await sql`
+            INSERT INTO query_logs
+                (question, search_query, scope_key, mode, cache_hit, chunk_ids,
+                 top_score, answer_chars, tokens_used, latency_ms)
+            VALUES (${row.question}, ${row.searchQuery ?? null}, ${row.scopeKey ?? null},
+                    ${row.mode}, ${row.cacheHit},
+                    ${sql.json((row.chunkIds ?? []) as unknown as Parameters<typeof sql.json>[0])},
+                    ${row.topScore ?? null}, ${row.answerChars ?? null},
+                    ${row.tokensUsed ?? null}, ${row.latencyMs ?? null})
+        `;
+    } catch (e) {
+        console.error("query_logs write failed:", e);
     }
 }
