@@ -1,5 +1,6 @@
 -- Creator FAQ — Full Database Schema
--- Run this on a fresh Supabase project
+-- Reference schema for a fresh Postgres + pgvector database.
+-- (The live DB is initialized from docker/init-db.sql; this is the source mirror.)
 
 -- Enable extensions
 CREATE EXTENSION IF NOT EXISTS vector;

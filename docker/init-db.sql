@@ -3,7 +3,7 @@
 -- (/docker-entrypoint-initdb.d/*.sql runs once when the data volume is empty).
 -- Idempotent: safe to re-run by hand against an existing DB.
 --
--- Mirrors supabase/schema.sql + migrations, verified against the live DB's
+-- Mirrors db/schema.sql + migrations, verified against the live DB's
 -- actual columns (2026-05-28 backup). RLS removed — a single app role talks
 -- to this DB, so RLS adds no security here.
 
@@ -292,7 +292,7 @@ BEGIN
 END;
 $$;
 
--- Seed: UFO/NHI collection (matches supabase/schema.sql)
+-- Seed: UFO/NHI collection (matches db/schema.sql)
 INSERT INTO collections (name, slug, description)
 VALUES ('UFO & NHI', 'ufo', 'Unidentified Aerial Phenomena and Non-Human Intelligence research channels')
 ON CONFLICT (slug) DO NOTHING;

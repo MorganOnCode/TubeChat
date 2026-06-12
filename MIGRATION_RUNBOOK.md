@@ -73,7 +73,7 @@ clean swap). Auth is Clerk (third-party, independent of DB). Ingestion scrapes
 YouTube → datacenter IP blocked → must run from a residential IP (laptop).
 
 ### Phase 1 — Database schema → `docker/init-db.sql`
-Mirrors `supabase/schema.sql` + migrations, verified against the live DB's actual
+Mirrors `db/schema.sql` + migrations (formerly `supabase/`), verified against the live DB's actual
 columns. Adds `CREATE EXTENSION pgcrypto, vector`; drops RLS; includes
 `match_transcript_chunks` RPC, `updated_at` triggers, ivfflat embedding index,
 the UFO collection seed, and an `error_reports` table (referenced in code but

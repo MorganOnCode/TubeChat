@@ -1,7 +1,7 @@
 -- Search & ask-box efficiency upgrade (feat/search-efficiency, 2026-06-12).
 -- Idempotent — safe to re-run. Apply to an existing prod DB with:
 --   docker compose -f docker-compose.prod.yml exec -T postgres \
---     psql -U tubechat -d tubechat < supabase/migrations/search_efficiency.sql
+--     psql -U tubechat -d tubechat < db/migrations/search_efficiency.sql
 --
 -- Adds, with NO behavior change until the app is deployed + cut over:
 --   * chunk-level FTS index            (Phase B: hybrid vector+keyword retrieval)
