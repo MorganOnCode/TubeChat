@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Mark } from "@/components/brand/Mark";
 import { AnswerBody, type CiteHandlers } from "@/components/ask/AnswerBody";
 import { ClipCard } from "@/components/ask/ClipCard";
+import { ExtractCards } from "@/components/ask/ExtractCards";
 import { streamAsk } from "@/lib/ask-client";
 import { STAGE_LABEL, type AskSource, type AskStage } from "@/lib/ask-types";
 
@@ -14,6 +15,7 @@ interface Turn {
   scopeChips: string[];
   answer: string;
   sources: AskSource[];
+  extracts: AskSource[];
   stage: AskStage | null;
   stageCount: number | null;
   done: boolean;
@@ -61,7 +63,7 @@ function AskPageInner() {
       ]);
 
   const runTurn = (id: number, question: string, history: { role: "user" | "assistant"; content: string }[]) => {
-    patch(id, { answer: "", sources: [], stage: "searching", stageCount: null, done: false, error: null });
+    patch(id, { answer: "", sources: [], extracts: [], stage: "searching", stageCount: null, done: false, error: null });
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -75,6 +77,7 @@ function AskPageInner() {
       (e) => {
         if (e.type === "stage") patch(id, { stage: e.stage, stageCount: e.count ?? null });
         else if (e.type === "sources") patch(id, { sources: e.sources });
+        else if (e.type === "extracts") patch(id, { extracts: e.extracts });
         else if (e.type === "token") appendAnswer(id, e.text);
         else if (e.type === "done") patch(id, { done: true, stage: null });
         else if (e.type === "error") patch(id, { done: true, stage: null, error: e.message });
@@ -98,7 +101,7 @@ function AskPageInner() {
     const history = historyFromTurns();
     setTurns((prev) => [
       ...prev,
-      { id, question: q, scopeChips: chips, answer: "", sources: [], stage: "searching", stageCount: null, done: false, error: null },
+      { id, question: q, scopeChips: chips, answer: "", sources: [], extracts: [], stage: "searching", stageCount: null, done: false, error: null },
     ]);
     runTurn(id, q, history);
   };
@@ -158,7 +161,8 @@ function AskPageInner() {
 
   const latest = turns[turns.length - 1];
   const streaming = latest ? !latest.done : false;
-  const railSources = latest?.sources ?? [];
+  // Extractive turns carry no `sources` but populate `extracts` — show those in the rail too.
+  const railSources = latest?.sources.length ? latest.sources : (latest?.extracts ?? []);
 
   const focusClip = (n: number) => {
     setActiveCite(n);
@@ -277,6 +281,8 @@ function AskPageInner() {
                       <span className="scan" />
                       <span className="status">{stageText(turn.stage, turn.stageCount)}</span>
                     </div>
+                  ) : turn.extracts.length > 0 && !turn.answer ? (
+                    <ExtractCards extracts={turn.extracts} />
                   ) : (
                     <AnswerBody
                       text={turn.answer}
@@ -311,7 +317,7 @@ function AskPageInner() {
                     </div>
                   )}
 
-                  {turn.done && !turn.error && turn.sources.length === 0 && (
+                  {turn.done && !turn.error && turn.sources.length === 0 && turn.extracts.length === 0 && (
                     <div style={{ marginTop: 10, fontSize: 13, color: "var(--ink-3)" }}>
                       No specific clips matched — try widening your channels or date range.
                     </div>
