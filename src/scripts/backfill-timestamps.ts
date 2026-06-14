@@ -63,30 +63,45 @@ function chunkSegments(segments: TimedSegment[]): Chunk[] {
 async function main() {
   const limit = parseInt(getArg('limit') || '25', 10);
   const videoArg = getArg('video');
+  // Skip Shorts/clips below this many seconds — rarely captioned, so they only
+  // burn a Supadata credit for an empty result. 0 = no filter (prior behaviour).
+  const minDuration = parseInt(getArg('min-duration') || '0', 10);
 
-  console.log(`🕒 Backfilling timestamps (limit: ${limit})...`);
+  console.log(`🕒 Backfilling timestamps (limit: ${limit}${minDuration ? `, min-duration: ${minDuration}s` : ''})...`);
+  console.log(`   ℹ️  On a host without yt-dlp captions, each video ≈ 1 Supadata credit — set --limit to your credit budget.`);
 
   // Completed videos whose chunks exist but lack timing (need backfill).
+  // Ordered by view_count so a credit-capped run spends on the most-watched videos
+  // first. `whisper`-sourced videos are excluded: they fell back to Whisper because
+  // no caption track exists, so neither Supadata nor yt-dlp can ever recover their
+  // timing — fetching them only wastes a credit on an empty result.
   const videos = await sql<{ id: string; youtube_id: string; title: string }[]>`
     SELECT v.id, v.youtube_id, v.title
     FROM videos v
     WHERE v.status = 'completed'
+      AND coalesce(v.duration_seconds, 0) >= ${minDuration}
       AND EXISTS (
         SELECT 1 FROM transcript_chunks tc
         WHERE tc.video_id = v.id AND tc.start_time IS NULL
       )
+      AND NOT EXISTS (
+        SELECT 1 FROM transcripts t
+        WHERE t.video_id = v.id AND t.source = 'whisper'
+      )
       ${videoArg ? sql`AND v.youtube_id = ${videoArg}` : sql``}
-    ORDER BY v.published_at DESC NULLS LAST
+    ORDER BY v.view_count DESC NULLS LAST
     LIMIT ${limit}
   `;
 
   console.log(`Found ${videos.length} video(s) needing timestamps.\n`);
   let done = 0;
   let skipped = 0;
+  let fetched = 0; // transcript fetches issued ≈ Supadata credits consumed
 
   for (const video of videos) {
     console.log(`🎬 ${video.title}`);
     let result;
+    fetched++;
     try {
       result = await fetchTranscript(video.youtube_id);
     } catch (e) {
@@ -136,7 +151,7 @@ async function main() {
     console.log(`   ✅ ${rows.length} timed chunks (${chunks[0].start}s … ${chunks[chunks.length - 1].end}s)`);
   }
 
-  console.log(`\n✅ Done. Backfilled: ${done}, skipped: ${skipped}.`);
+  console.log(`\n✅ Done. Backfilled: ${done}, skipped: ${skipped}. Supadata fetches (≈credits used): ${fetched}.`);
 }
 
 main()
