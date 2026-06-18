@@ -440,6 +440,7 @@ export interface CachedPayload {
     extracts?: AskSource[];
     searchQuery?: string | null;
     topSimilarity?: number;
+    followups?: string[];
 }
 export interface CachedQuery {
     mode: string;

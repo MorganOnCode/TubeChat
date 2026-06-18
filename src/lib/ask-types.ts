@@ -21,6 +21,9 @@ export type AskEvent =
   // Extractive mode (no LLM): the top fused chunks rendered as quote cards.
   // Used as the free-tier serve, the low-confidence fallback, and Phase-0 search.
   | { type: "extracts"; extracts: AskSource[] }
+  // Answer-specific follow-up suggestions, generated after the answer finishes
+  // (or replayed from cache). Sent after `done`, before the stream closes.
+  | { type: "followups"; followups: string[] }
   | { type: "done"; tokensUsed: number; searchQuery: string | null; cached?: boolean; mode?: string }
   | { type: "error"; message: string };
 

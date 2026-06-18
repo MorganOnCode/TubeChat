@@ -10,12 +10,36 @@ import {
     logQuery,
     type SemanticChunk,
 } from '@/lib/db';
-import { rrfFuse, normalizeQuestion, scopeKey, cacheKey } from '@/lib/retrieval';
+import { rrfFuse, normalizeQuestion, scopeKey, cacheKey, historyKey } from '@/lib/retrieval';
 import type { AskSource } from '@/lib/ask-types';
 
 interface Message {
     role: 'user' | 'assistant';
     content: string;
+}
+
+// Synthesis model: premium by default for citation-following + tone; reformulation
+// and follow-up generation stay on gpt-4o-mini → exactly one premium call per answer.
+const SYNTH_MODEL = process.env.ASK_SYNTH_MODEL ?? 'gpt-4o';
+
+// Live corpus size for the prompts, memoized for the process lifetime.
+let _videoCount: number | null = null;
+async function getVideoCount(): Promise<number> {
+    if (_videoCount != null) return _videoCount;
+    try {
+        const [r] = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM videos WHERE status='completed'`;
+        _videoCount = r?.n ?? 0;
+    } catch {
+        _videoCount = 0;
+    }
+    return _videoCount;
+}
+
+/** Rounded display string for the corpus size, e.g. "4,400+"; safe phrase on DB error. */
+async function corpusSizeLabel(): Promise<string> {
+    const n = await getVideoCount();
+    if (n <= 0) return 'thousands of';
+    return `${(Math.floor(n / 100) * 100).toLocaleString('en-US')}+`;
 }
 
 // Retrieval tuning -----------------------------------------------------------
@@ -37,7 +61,8 @@ const NOT_COVERED_TOP_SIM = 0.35;
  */
 async function reformulateQuery(
     userMessage: string,
-    conversationHistory: Message[]
+    conversationHistory: Message[],
+    corpusLabel: string
 ): Promise<{ searchQuery: string; needsSearch: boolean; directResponse?: string }> {
     const openai = getClient();
 
@@ -52,7 +77,7 @@ async function reformulateQuery(
         messages: [
             {
                 role: 'system',
-                content: `You are a query reformulator for a UFO/UAP/NHI transcript search engine containing 3,600+ YouTube video transcripts from channels like The Why Files, Jesse Michels, Project Unity, Danny Jones, VETTED, and more.
+                content: `You are a query reformulator for a UFO/UAP/NHI transcript search engine containing ${corpusLabel} YouTube video transcripts from channels like The Why Files, Jesse Michels, Project Unity, Danny Jones, VETTED, and more.
 
 Your job: turn the user's conversational message into an optimal search query for semantic vector search over transcript chunks.
 
@@ -157,7 +182,7 @@ async function retrieveContext(
     return { chunks: fused, videos: videoMap, topSimilarity };
 }
 
-const SYSTEM_PROMPT = `You are ScriptTube AI, an expert research assistant with access to a database of 3,600+ transcribed YouTube videos about UFOs, UAPs, NHI (non-human intelligence), consciousness, government disclosure, ancient civilizations, and related topics.
+const buildSystemPrompt = (corpusLabel: string) => `You are tubechat, an expert research assistant with access to a database of ${corpusLabel} transcribed YouTube videos about UFOs, UAPs, NHI (non-human intelligence), consciousness, government disclosure, ancient civilizations, and related topics.
 
 Your personality:
 - Knowledgeable and conversational — like talking to a well-read friend
@@ -183,59 +208,113 @@ You do NOT:
 - Give medical, legal, or financial advice
 - Break character as a transcript research tool`;
 
-/** Build the chat messages (system + history + current turn with context). */
+const MAX_SOURCES = 8;            // distinct videos cited (rail cards + [Source N])
+const MAX_CHUNKS_PER_SOURCE = 2;  // chunks concatenated into one source's context body
+const MAX_CHARS_PER_SOURCE = 1200;
+
+/**
+ * Build the deduped source list AND the LLM context from the SAME ordered list so
+ * `[Source N]` ⇔ sources[N-1] ⇔ rail card N by construction. Groups fused chunks
+ * by video in RRF order (highest-ranked chunk wins the deep-link), caps to
+ * MAX_SOURCES videos, and bounds each source's body so an over-represented video
+ * can't blow max_tokens. The frontend numbers rail cards 1..N in this same order.
+ */
+function buildSourcesAndContext(
+    chunks: SemanticChunk[],
+    videoMap: Map<string, any>
+): { sources: AskSource[]; context: string } {
+    const order: string[] = [];                       // youtube_id, first-seen (RRF) order
+    const grouped = new Map<string, { video: any; chunks: SemanticChunk[] }>();
+    for (const chunk of chunks) {
+        const video = videoMap.get(chunk.video_id);
+        if (!video) continue;
+        const yid = video.youtube_id;
+        let g = grouped.get(yid);
+        if (!g) {
+            if (order.length >= MAX_SOURCES) continue;  // already have 8 distinct videos
+            g = { video, chunks: [] };
+            grouped.set(yid, g);
+            order.push(yid);
+        }
+        if (g.chunks.length < MAX_CHUNKS_PER_SOURCE) g.chunks.push(chunk);
+    }
+
+    const sources: AskSource[] = [];
+    const contextParts: string[] = [];
+    order.forEach((yid, i) => {
+        const { video, chunks: cs } = grouped.get(yid)!;
+        const head = cs[0];                              // highest-ranked chunk for this video
+        const startSeconds = typeof head.start_time === 'number' ? head.start_time : null;
+        const url = `/v/${video.youtube_id}${startSeconds != null ? `?t=${startSeconds}` : ''}`;
+        sources.push({
+            videoId: video.youtube_id,
+            channelId: video.channel_id ?? null,
+            title: video.title,
+            channel: video.channel_name,
+            publishedAt: video.published_at,
+            similarity: Math.round((head.similarity ?? 0) * 100),
+            snippet: head.content.slice(0, 200),
+            startSeconds,
+            url,
+        });
+
+        const date = video.published_at ? new Date(video.published_at).toISOString().split('T')[0] : 'unknown date';
+        const body = cs.map((c) => c.content).join('\n').slice(0, MAX_CHARS_PER_SOURCE);
+        contextParts.push(`[Source ${i + 1}: "${video.title}" by ${video.channel_name}, ${date}]\n${body}`);
+    });
+
+    return { sources, context: contextParts.join('\n\n---\n\n') };
+}
+
+/** Build the chat messages (system + history + current turn with prebuilt context). */
 function buildMessages(
     userMessage: string,
-    chunks: SemanticChunk[],
-    videoMap: Map<string, any>,
-    conversationHistory: Message[]
+    context: string,
+    conversationHistory: Message[],
+    systemPrompt: string
 ): any[] {
-    const contextParts = chunks.map((chunk, i) => {
-        const video = videoMap.get(chunk.video_id);
-        const label = video
-            ? `[Source ${i + 1}: "${video.title}" by ${video.channel_name}, ${video.published_at ? new Date(video.published_at).toISOString().split('T')[0] : 'unknown date'}]`
-            : `[Source ${i + 1}]`;
-        return `${label}\n${chunk.content}`;
-    });
-    const context = contextParts.join('\n\n---\n\n');
-
-    const messages: any[] = [{ role: 'system', content: SYSTEM_PROMPT }];
+    const messages: any[] = [{ role: 'system', content: systemPrompt }];
     for (const msg of conversationHistory.slice(-8)) {
         messages.push({ role: msg.role, content: msg.content });
     }
     messages.push({
         role: 'user',
-        content: chunks.length > 0
+        content: context
             ? `${userMessage}\n\n--- RELEVANT TRANSCRIPT EXCERPTS ---\n\n${context}`
             : userMessage,
     });
     return messages;
 }
 
-/** Deduplicated source list — one clip per video, carrying its start time + deep-link URL. */
-function buildSources(chunks: SemanticChunk[], videoMap: Map<string, any>): AskSource[] {
-    const seenVideoIds = new Set<string>();
-    return chunks
-        .map((chunk): AskSource | null => {
-            const video = videoMap.get(chunk.video_id);
-            if (!video || seenVideoIds.has(video.youtube_id)) return null;
-            seenVideoIds.add(video.youtube_id);
-            const startSeconds = typeof chunk.start_time === 'number' ? chunk.start_time : null;
-            const url = `/v/${video.youtube_id}${startSeconds != null ? `?t=${startSeconds}` : ''}`;
-            return {
-                videoId: video.youtube_id,
-                channelId: video.channel_id ?? null,
-                title: video.title,
-                channel: video.channel_name,
-                publishedAt: video.published_at,
-                similarity: Math.round((chunk.similarity ?? 0) * 100),
-                snippet: chunk.content.slice(0, 200),
-                startSeconds,
-                url,
-            };
-        })
-        .filter((s): s is AskSource => s !== null)
-        .slice(0, 8);
+/**
+ * Generate 3 short, answer-specific follow-up suggestions (gpt-4o-mini, best-effort).
+ * Any failure → empty array (the client falls back to its static chips).
+ */
+async function generateFollowups(userMessage: string, answer: string): Promise<string[]> {
+    try {
+        const openai = getClient();
+        const response = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            max_tokens: 150,
+            temperature: 0.6,
+            messages: [
+                {
+                    role: 'system',
+                    content: `Given a user's question and an assistant's answer about a UFO/UAP/NHI video archive, suggest 3 natural follow-up questions the user might ask next. Each must be specific to the answer's content, short (≤ 60 characters), and end with a question mark. Return JSON only: {"followups": ["...", "...", "..."]}`,
+                },
+                {
+                    role: 'user',
+                    content: `Question: ${userMessage}\n\nAnswer: ${answer.slice(0, 2000)}`,
+                },
+            ],
+            response_format: { type: 'json_object' },
+        });
+        const parsed = JSON.parse(response.choices[0]?.message?.content || '{}');
+        const followups = Array.isArray(parsed.followups) ? parsed.followups : [];
+        return followups.filter((f: unknown): f is string => typeof f === 'string' && f.trim().length > 0).slice(0, 3);
+    } catch {
+        return [];
+    }
 }
 
 /** Extractive quote cards (no LLM): top fused chunks with longer snippets. */
@@ -294,11 +373,13 @@ export async function POST(request: NextRequest) {
     const encoder = new TextEncoder();
     const startedAt = Date.now();
 
-    // Cache + log identity. Only first-turn questions are cacheable (answers with
-    // history depend on the conversation). Scope keys the cache per video/channel.
+    // Cache + log identity. The cache key folds in a digest of the conversation
+    // history, so follow-up turns are cacheable too (history="" for first turns,
+    // keeping those keys identical to the pre-warm script). Scope keys per video/channel.
     const sKey = scopeKey({ channelId, videoId });
     const normalized = normalizeQuestion(userMessage);
-    const cacheable = conversationHistory.length === 0;
+    const hKey = historyKey(conversationHistory);
+    const cacheable = true;
 
     const stream = new ReadableStream({
         async start(controller) {
@@ -311,7 +392,7 @@ export async function POST(request: NextRequest) {
                 let key = '';
                 if (cacheable) {
                     corpusVersion = await getCorpusVersion();
-                    key = cacheKey(corpusVersion, sKey, mode, normalized);
+                    key = cacheKey(corpusVersion, sKey, mode, normalized, hKey);
                     const cached = await getCachedQuery(key);
                     if (cached) {
                         const p = cached.payload;
@@ -325,18 +406,22 @@ export async function POST(request: NextRequest) {
                             if (p.answer) send({ type: 'token', text: p.answer });
                         }
                         send({ type: 'done', tokensUsed: 0, searchQuery: p.searchQuery ?? null, cached: true, mode: cached.mode });
+                        if (cached.mode === 'answer' && p.followups?.length) send({ type: 'followups', followups: p.followups });
                         controller.close();
                         void logQuery({ question: userMessage, searchQuery: p.searchQuery ?? null, scopeKey: sKey, mode: cached.mode, cacheHit: true, latencyMs: Date.now() - startedAt });
                         return;
                     }
                 }
 
+                // Live corpus size for the prompts (memoized across requests).
+                const corpusLabel = await corpusSizeLabel();
+
                 // --- Reformulate (skipped for specific first-turn questions) --------
                 let searchQuery = userMessage;
                 let needsSearch = true;
                 let directResponse: string | undefined;
                 if (shouldReformulate(userMessage, conversationHistory)) {
-                    const r = await reformulateQuery(userMessage, conversationHistory);
+                    const r = await reformulateQuery(userMessage, conversationHistory, corpusLabel);
                     searchQuery = r.searchQuery || userMessage;
                     needsSearch = r.needsSearch;
                     directResponse = r.directResponse;
@@ -388,16 +473,18 @@ export async function POST(request: NextRequest) {
                 }
 
                 // --- Synthesized answer --------------------------------------------
-                const sources = buildSources(chunks, videos);
+                // Build the cited sources and the LLM context from the same ordered
+                // list so [Source N] ⇔ sources[N-1] ⇔ rail card N by construction.
+                const { sources, context } = buildSourcesAndContext(chunks, videos);
                 send({ type: 'stage', stage: 'found', count: sources.length });
                 send({ type: 'sources', sources });
                 send({ type: 'stage', stage: 'reading' });
 
-                const messages = buildMessages(userMessage, chunks, videos, conversationHistory);
+                const messages = buildMessages(userMessage, context, conversationHistory, buildSystemPrompt(corpusLabel));
                 send({ type: 'stage', stage: 'answering' });
 
                 const completion = await openai.chat.completions.create({
-                    model: 'gpt-4o-mini',
+                    model: SYNTH_MODEL,
                     max_tokens: 2000,
                     temperature: 0.5,
                     messages,
@@ -418,12 +505,17 @@ export async function POST(request: NextRequest) {
                 if (!answer) {
                     send({ type: 'token', text: 'Sorry, I had trouble generating a response. Try rephrasing your question.' });
                 }
+                // Send `done` immediately so the answer/Share feel snappy, then take a
+                // beat to generate answer-specific follow-ups before closing the stream.
                 send({ type: 'done', tokensUsed, searchQuery, mode: 'answer' });
+
+                const followups = answer ? await generateFollowups(userMessage, answer) : [];
+                if (followups.length) send({ type: 'followups', followups });
                 controller.close();
 
-                // Write-through to the cache (first-turn answers only).
+                // Write-through to the cache (answers, including follow-up turns via hKey).
                 if (cacheable && answer) {
-                    void putCachedQuery({ cacheKey: key, corpusVersion, scopeKey: sKey, normalizedQuestion: normalized, mode: 'answer', payload: { answer, sources, searchQuery, topSimilarity } });
+                    void putCachedQuery({ cacheKey: key, corpusVersion, scopeKey: sKey, normalizedQuestion: normalized, mode: 'answer', payload: { answer, sources, searchQuery, topSimilarity, followups } });
                 }
                 void logQuery({ question: userMessage, searchQuery, scopeKey: sKey, mode: 'answer', cacheHit: false, chunkIds, topScore: topSimilarity, answerChars: answer.length, tokensUsed, latencyMs: Date.now() - startedAt });
             } catch (error) {
