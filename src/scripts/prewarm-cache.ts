@@ -12,7 +12,7 @@ import { config } from 'dotenv';
 config();
 
 import { sql, getCorpusVersion } from '../lib/db';
-import { normalizeQuestion, scopeKey, cacheKey } from '../lib/retrieval';
+import { normalizeQuestion, scopeKey, cacheKey, historyKey } from '../lib/retrieval';
 import { CURATED_QUESTIONS } from '../lib/curated-questions';
 
 const BASE_URL = process.env.PREWARM_BASE_URL || 'http://127.0.0.1:3002';
@@ -49,7 +49,7 @@ async function warm(question: string): Promise<{ ok: boolean; cached: boolean; m
 /** Flag the cache row curated. Retries briefly — the route's write-through is
  *  fire-and-forget after the stream closes, so the row may land a beat later. */
 async function markCurated(question: string, corpusVersion: string): Promise<boolean> {
-    const key = cacheKey(corpusVersion, scopeKey({}), 'answer', normalizeQuestion(question));
+    const key = cacheKey(corpusVersion, scopeKey({}), 'answer', normalizeQuestion(question), historyKey([]));
     for (let attempt = 0; attempt < 6; attempt++) {
         const r = await sql`UPDATE query_cache SET curated = true WHERE cache_key = ${key}`;
         if (r.count > 0) return true;

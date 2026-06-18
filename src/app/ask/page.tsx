@@ -21,6 +21,7 @@ interface Turn {
   done: boolean;
   error: string | null;
   shareId?: string;
+  followups?: string[];
 }
 
 const FOLLOWUPS = [
@@ -28,6 +29,13 @@ const FOLLOWUPS = [
   "Summarize all the sources",
   "Who is most credible here?",
 ];
+
+const THREAD_KEY = "tubechat-ask-thread";
+
+interface SavedThread {
+  turns: Turn[];
+  scope: { videoId?: string; channelId?: string };
+}
 
 function stageText(stage: AskStage | null, count: number | null): string {
   if (stage === "found") return `Found ${count ?? 0} relevant clip${count === 1 ? "" : "s"}`;
@@ -47,6 +55,7 @@ function AskPageInner() {
   const scopeRef = useRef<{ videoId?: string; channelId?: string }>({});
   const railRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<Record<number, HTMLAnchorElement | null>>({});
+  const turnRefs = useRef<Record<number, HTMLDivElement | null>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const patch = (id: number, p: Partial<Turn>) =>
@@ -79,6 +88,7 @@ function AskPageInner() {
         else if (e.type === "sources") patch(id, { sources: e.sources });
         else if (e.type === "extracts") patch(id, { extracts: e.extracts });
         else if (e.type === "token") appendAnswer(id, e.text);
+        else if (e.type === "followups") patch(id, { followups: e.followups });
         else if (e.type === "done") patch(id, { done: true, stage: null });
         else if (e.type === "error") patch(id, { done: true, stage: null, error: e.message });
       },
@@ -106,18 +116,58 @@ function AskPageInner() {
     runTurn(id, q, history);
   };
 
-  // Initial question from the entry-point params.
+  // Initial mount: restore a saved thread and/or run the entry-point question.
   useEffect(() => {
     if (didInit.current) return;
     didInit.current = true;
-    const q = searchParams.get("q");
-    scopeRef.current = {
+
+    const q = (searchParams.get("q") || "").trim();
+    const paramScope = {
       videoId: searchParams.get("video") || undefined,
       channelId: (searchParams.get("channels") || "").split(",")[0] || undefined,
     };
-    if (q && q.trim()) ask(q);
+
+    let saved: SavedThread | null = null;
+    try {
+      const raw = sessionStorage.getItem(THREAD_KEY);
+      if (raw) saved = JSON.parse(raw) as SavedThread;
+    } catch {
+      /* ignore malformed storage */
+    }
+
+    const restore = (s: SavedThread): boolean => {
+      const restored = (s.turns ?? []).filter((t) => t.done && !t.error);
+      if (restored.length === 0) return false;
+      scopeRef.current = s.scope ?? {};
+      idRef.current = restored.reduce((m, t) => Math.max(m, t.id), 0);
+      setTurns(restored);
+      return true;
+    };
+
+    if (q) {
+      // Refreshing an already-asked thread (q still in the URL) → restore, don't re-ask.
+      if (!(saved && saved.turns?.[0]?.question === q && restore(saved))) {
+        scopeRef.current = paramScope;
+        ask(q);
+      }
+      router.replace("/ask"); // strip ?q= so a later refresh restores from storage
+    } else if (!(saved && restore(saved))) {
+      scopeRef.current = paramScope;
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Persist completed turns (+ scope) so a refresh restores the conversation.
+  // Write-only — newThread() handles clearing; avoids clobbering on first mount.
+  useEffect(() => {
+    const doneTurns = turns.filter((t) => t.done && !t.error).slice(-20);
+    if (doneTurns.length === 0) return;
+    try {
+      sessionStorage.setItem(THREAD_KEY, JSON.stringify({ turns: doneTurns, scope: scopeRef.current } satisfies SavedThread));
+    } catch {
+      /* ignore quota */
+    }
+  }, [turns]);
 
   // Keep the latest turn in view as it streams.
   useEffect(() => {
@@ -129,6 +179,11 @@ function AskPageInner() {
     scopeRef.current = {};
     setTurns([]);
     setActiveCite(null);
+    try {
+      sessionStorage.removeItem(THREAD_KEY);
+    } catch {
+      /* ignore */
+    }
     router.replace("/ask");
   };
 
@@ -195,6 +250,7 @@ function AskPageInner() {
                     key={t.id}
                     className={"hist" + (i === turns.length - 1 ? " active" : "")}
                     title={t.question}
+                    onClick={() => turnRefs.current[t.id]?.scrollIntoView({ behavior: "smooth", block: "start" })}
                   >
                     {t.question.length > 32 ? t.question.slice(0, 32) + "…" : t.question}
                   </div>
@@ -233,7 +289,13 @@ function AskPageInner() {
             const thinking = !turn.error && turn.answer === "" && !turn.done;
 
             return (
-              <div key={turn.id} style={{ marginBottom: 40 }}>
+              <div
+                key={turn.id}
+                ref={(el) => {
+                  turnRefs.current[turn.id] = el;
+                }}
+                style={{ marginBottom: 40 }}
+              >
                 <div className="msg-user">
                   <div className="row gap10" style={{ marginBottom: 8 }}>
                     <span className="ava-you" />
@@ -329,7 +391,7 @@ function AskPageInner() {
                         Follow up
                       </div>
                       <div className="col" style={{ gap: 6 }}>
-                        {FOLLOWUPS.map((f) => (
+                        {(turn.followups ?? FOLLOWUPS).map((f) => (
                           <button key={f} className="follow-chip" onClick={() => ask(f)} type="button">
                             <span>{f}</span>
                             <span style={{ color: "var(--ink-faint)" }}>↗</span>

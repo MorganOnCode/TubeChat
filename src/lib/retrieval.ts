@@ -18,10 +18,21 @@ export function scopeKey(scope: { channelId?: string | null; videoId?: string | 
     return "";
 }
 
-/** sha256 cache key over (corpus_version, scope, mode, normalized question). */
-export function cacheKey(corpusVersion: string, scope: string, mode: string, normalizedQuestion: string): string {
+/**
+ * Stable digest of the conversation history for cache-keying follow-up turns.
+ * Empty history → "" so first-turn keys (live and pre-warm) stay byte-identical.
+ * Otherwise a 16-char sha256 over the last ~6 turns' role:content.
+ */
+export function historyKey(history: { role: string; content: string }[]): string {
+    if (!history || history.length === 0) return "";
+    const recent = history.slice(-6).map((m) => `${m.role}:${m.content}`).join("\n");
+    return createHash("sha256").update(recent).digest("hex").slice(0, 16);
+}
+
+/** sha256 cache key over (corpus_version, scope, mode, normalized question, history). */
+export function cacheKey(corpusVersion: string, scope: string, mode: string, normalizedQuestion: string, history = ""): string {
     return createHash("sha256")
-        .update(`${corpusVersion}|${scope}|${mode}|${normalizedQuestion}`)
+        .update(`${corpusVersion}|${scope}|${mode}|${normalizedQuestion}|${history}`)
         .digest("hex");
 }
 
