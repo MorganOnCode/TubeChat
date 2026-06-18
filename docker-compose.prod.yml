@@ -64,6 +64,9 @@ services:
       # 1536 = serve on the live column; flip to 512 at cutover (after `npm run reembed`
       # + the v2 HNSW index). The app routes to match_transcript_chunks_v2 automatically.
       EMBED_DIMS: ${EMBED_DIMS:-1536}
+      # Answer-synthesis model. Defaults to gpt-4o; override in .env (e.g. gpt-4o-mini
+      # for a cheaper rollout, or gpt-4.1). Reformulation + follow-ups always use gpt-4o-mini.
+      ASK_SYNTH_MODEL: ${ASK_SYNTH_MODEL:-gpt-4o}
       NEXT_TELEMETRY_DISABLED: "1"
     depends_on:
       postgres:
