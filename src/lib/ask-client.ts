@@ -1,4 +1,4 @@
-import type { AskEvent } from "./ask-types";
+import type { AskEvent, ByokConfig } from "./ask-types";
 
 export interface AskRequest {
   question: string;
@@ -7,6 +7,8 @@ export interface AskRequest {
   channelId?: string;
   /** "extracts" = no-LLM quote cards (free-tier / fallback); default "answer". */
   mode?: "answer" | "extracts";
+  /** Bring-your-own-key/model: run the chat calls on the user's provider. */
+  byok?: ByokConfig;
 }
 
 /**

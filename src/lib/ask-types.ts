@@ -1,5 +1,8 @@
 /** Shared client-safe types for the Ask flow (no db imports). */
 
+import type { ByokConfig } from "./providers";
+export type { ByokConfig };
+
 export interface AskSource {
   videoId: string;
   channelId: string | null;
@@ -25,7 +28,9 @@ export type AskEvent =
   // (or replayed from cache). Sent after `done`, before the stream closes.
   | { type: "followups"; followups: string[] }
   | { type: "done"; tokensUsed: number; searchQuery: string | null; cached?: boolean; mode?: string }
-  | { type: "error"; message: string };
+  // `code: "byok_failed"` + `retryable` tell the UI a bring-your-own-model run failed
+  // and offer a one-click "retry on tubechat's default model".
+  | { type: "error"; message: string; code?: "byok_failed"; retryable?: boolean };
 
 export const STAGE_LABEL: Record<AskStage, string> = {
   searching: "Searching the indexed archive…",

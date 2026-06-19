@@ -169,6 +169,7 @@ CREATE TABLE IF NOT EXISTS query_logs (
   answer_chars INTEGER,
   tokens_used  INTEGER,
   latency_ms   INTEGER,
+  provider     TEXT,            -- byok provider id (openai|anthropic|openrouter|opencode-zen) or NULL for server default
   created_at   TIMESTAMPTZ DEFAULT now()
 );
 
