@@ -2,6 +2,8 @@
 
 import { useAsk } from "./AskProvider";
 import { AddScope, ChannelFilter, DateFilter, ScopeChips } from "./ScopeFilters";
+import { ModelSettings } from "./ModelSettings";
+import { PROVIDER_PRESETS } from "@/lib/providers";
 
 const DEFAULT_SUGGESTIONS = [
   "What did Grusch say about NHI biologics?",
@@ -18,7 +20,7 @@ export function AskBox({
   compact?: boolean;
   topics?: string[];
 }) {
-  const { query, setQuery, submit } = useAsk();
+  const { query, setQuery, submit, activeByok } = useAsk();
   const onKey = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -43,9 +45,15 @@ export function AskBox({
           <AddScope topics={topics} />
           <ChannelFilter />
           <DateFilter />
+          <ModelSettings />
           <ScopeChips inBar />
         </div>
         <div className="row gap10">
+          {activeByok && (
+            <span className="pill on" title={`Answering with ${PROVIDER_PRESETS[activeByok.provider].label}`} style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              ⚙ {activeByok.model}
+            </span>
+          )}
           <span className="kicker" style={{ opacity: 0.7 }}>
             ⏎ to ask
           </span>
