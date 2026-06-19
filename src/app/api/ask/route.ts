@@ -12,6 +12,8 @@ import {
 } from '@/lib/db';
 import { rrfFuse, normalizeQuestion, scopeKey, cacheKey, historyKey } from '@/lib/retrieval';
 import type { AskSource } from '@/lib/ask-types';
+import { validateByok, PROVIDER_PRESETS, type ByokConfig } from '@/lib/providers';
+import { byokChatJSON, byokChatStream, ByokError } from '@/lib/providers.server';
 
 interface Message {
     role: 'user' | 'assistant';
@@ -62,22 +64,14 @@ const NOT_COVERED_TOP_SIM = 0.35;
 async function reformulateQuery(
     userMessage: string,
     conversationHistory: Message[],
-    corpusLabel: string
+    corpusLabel: string,
+    byok?: ByokConfig
 ): Promise<{ searchQuery: string; needsSearch: boolean; directResponse?: string }> {
-    const openai = getClient();
-
     const historyContext = conversationHistory.slice(-6).map(m =>
         `${m.role === 'user' ? 'Human' : 'Assistant'}: ${m.content.slice(0, 300)}`
     ).join('\n');
 
-    const response = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        max_tokens: 200,
-        temperature: 0,
-        messages: [
-            {
-                role: 'system',
-                content: `You are a query reformulator for a UFO/UAP/NHI transcript search engine containing ${corpusLabel} YouTube video transcripts from channels like The Why Files, Jesse Michels, Project Unity, Danny Jones, VETTED, and more.
+    const system = `You are a query reformulator for a UFO/UAP/NHI transcript search engine containing ${corpusLabel} YouTube video transcripts from channels like The Why Files, Jesse Michels, Project Unity, Danny Jones, VETTED, and more.
 
 Your job: turn the user's conversational message into an optimal search query for semantic vector search over transcript chunks.
 
@@ -89,18 +83,27 @@ Rules:
 5. Strip filler: "can you tell me about" → just the topic
 6. Be specific: "what did he say" → "what did [person] say about [topic]"
 
-Return JSON only: {"searchQuery": "...", "needsSearch": true/false, "directResponse": "..." (only if needsSearch=false)}`
-            },
-            {
-                role: 'user',
-                content: `Conversation so far:\n${historyContext || '(new conversation)'}\n\nLatest message: "${userMessage}"`
-            }
-        ],
-        response_format: { type: 'json_object' },
-    });
+Return JSON only: {"searchQuery": "...", "needsSearch": true/false, "directResponse": "..." (only if needsSearch=false)}`;
+    const user = `Conversation so far:\n${historyContext || '(new conversation)'}\n\nLatest message: "${userMessage}"`;
+
+    // BYOK errors propagate (a bad key should fail the whole turn → byok_failed);
+    // only the JSON parse is tolerant.
+    let content: string;
+    if (byok) {
+        content = await byokChatJSON(byok, { system, user, maxTokens: 200, temperature: 0 });
+    } else {
+        const response = await getClient().chat.completions.create({
+            model: 'gpt-4o-mini',
+            max_tokens: 200,
+            temperature: 0,
+            messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+            response_format: { type: 'json_object' },
+        });
+        content = response.choices[0]?.message?.content || '';
+    }
 
     try {
-        return JSON.parse(response.choices[0]?.message?.content || '{"searchQuery":"","needsSearch":true}');
+        return JSON.parse(content || '{"searchQuery":"","needsSearch":true}');
     } catch {
         return { searchQuery: userMessage, needsSearch: true };
     }
@@ -290,30 +293,43 @@ function buildMessages(
  * Generate 3 short, answer-specific follow-up suggestions (gpt-4o-mini, best-effort).
  * Any failure → empty array (the client falls back to its static chips).
  */
-async function generateFollowups(userMessage: string, answer: string): Promise<string[]> {
+async function generateFollowups(userMessage: string, answer: string, byok?: ByokConfig): Promise<string[]> {
+    const system = `Given a user's question and an assistant's answer about a UFO/UAP/NHI video archive, suggest 3 natural follow-up questions the user might ask next. Each must be specific to the answer's content, short (≤ 60 characters), and end with a question mark. Return JSON only: {"followups": ["...", "...", "..."]}`;
+    const user = `Question: ${userMessage}\n\nAnswer: ${answer.slice(0, 2000)}`;
     try {
-        const openai = getClient();
-        const response = await openai.chat.completions.create({
-            model: 'gpt-4o-mini',
-            max_tokens: 150,
-            temperature: 0.6,
-            messages: [
-                {
-                    role: 'system',
-                    content: `Given a user's question and an assistant's answer about a UFO/UAP/NHI video archive, suggest 3 natural follow-up questions the user might ask next. Each must be specific to the answer's content, short (≤ 60 characters), and end with a question mark. Return JSON only: {"followups": ["...", "...", "..."]}`,
-                },
-                {
-                    role: 'user',
-                    content: `Question: ${userMessage}\n\nAnswer: ${answer.slice(0, 2000)}`,
-                },
-            ],
-            response_format: { type: 'json_object' },
-        });
-        const parsed = JSON.parse(response.choices[0]?.message?.content || '{}');
+        let content: string;
+        if (byok) {
+            // Best-effort: a byok failure here just falls back to static chips.
+            content = await byokChatJSON(byok, { system, user, maxTokens: 150, temperature: 0.6 });
+        } else {
+            const response = await getClient().chat.completions.create({
+                model: 'gpt-4o-mini',
+                max_tokens: 150,
+                temperature: 0.6,
+                messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+                response_format: { type: 'json_object' },
+            });
+            content = response.choices[0]?.message?.content || '{}';
+        }
+        const parsed = JSON.parse(content || '{}');
         const followups = Array.isArray(parsed.followups) ? parsed.followups : [];
         return followups.filter((f: unknown): f is string => typeof f === 'string' && f.trim().length > 0).slice(0, 3);
     } catch {
         return [];
+    }
+}
+
+/** User-facing copy for a classified BYOK failure (distinct per code). Never echoes the key. */
+function byokUserMessage(err: ByokError, byok?: ByokConfig): string {
+    const label = byok ? PROVIDER_PRESETS[byok.provider].label : 'your provider';
+    const model = byok?.model ?? 'the model';
+    switch (err.code) {
+        case 'auth': return `${label} rejected that API key. Check it in settings.`;
+        case 'model_not_found': return `${label} doesn't recognize the model "${model}".`;
+        case 'rate_limit': return `${label} rate-limited the request — try again shortly.`;
+        case 'bad_request': return `${label} rejected the request${err.providerMessage ? `: ${err.providerMessage}` : ''}.`;
+        case 'network': return `Couldn't reach ${label}. Check your connection and try again.`;
+        default: return `${label} request failed${err.providerMessage ? `: ${err.providerMessage}` : ''}.`;
     }
 }
 
@@ -354,17 +370,27 @@ function buildExtracts(chunks: SemanticChunk[], videoMap: Map<string, any>): Ask
  *   {type:"error", message}
  */
 export async function POST(request: NextRequest) {
-    let body: { question?: string; channelId?: string; videoId?: string; history?: Message[]; mode?: 'answer' | 'extracts' };
+    let body: { question?: string; channelId?: string; videoId?: string; history?: Message[]; mode?: 'answer' | 'extracts'; byok?: unknown };
     try {
         body = await request.json();
     } catch {
         return Response.json({ error: 'Invalid request body' }, { status: 400 });
     }
 
-    const { question, channelId, videoId, history = [], mode = 'answer' } = body;
+    const { question, channelId, videoId, history = [], mode = 'answer', byok: rawByok } = body;
     if (!question || typeof question !== 'string' || question.trim().length < 1) {
         return Response.json({ error: 'Question too short' }, { status: 400 });
     }
+
+    // Bring-your-own-key/model. Validated to the fixed provider enum (no arbitrary
+    // URLs → no SSRF). The key is used transiently per request — never persisted or logged.
+    let byok: ByokConfig | undefined;
+    if (rawByok !== undefined && rawByok !== null) {
+        const v = validateByok(rawByok);
+        if (!v.ok) return Response.json({ error: v.reason }, { status: 400 });
+        byok = v.config;
+    }
+    const byokActive = !!byok;
 
     const userMessage = question.trim().slice(0, 1000);
     const conversationHistory: Message[] = (history || []).slice(-10);
@@ -376,10 +402,13 @@ export async function POST(request: NextRequest) {
     // Cache + log identity. The cache key folds in a digest of the conversation
     // history, so follow-up turns are cacheable too (history="" for first turns,
     // keeping those keys identical to the pre-warm script). Scope keys per video/channel.
+    // BYOK requests BYPASS the cache (read + write): the cache key has no model
+    // dimension, so a user's model output must not be served from / written to the
+    // shared (server-model) cache.
     const sKey = scopeKey({ channelId, videoId });
     const normalized = normalizeQuestion(userMessage);
     const hKey = historyKey(conversationHistory);
-    const cacheable = true;
+    const cacheable = !byokActive;
 
     const stream = new ReadableStream({
         async start(controller) {
@@ -408,7 +437,7 @@ export async function POST(request: NextRequest) {
                         send({ type: 'done', tokensUsed: 0, searchQuery: p.searchQuery ?? null, cached: true, mode: cached.mode });
                         if (cached.mode === 'answer' && p.followups?.length) send({ type: 'followups', followups: p.followups });
                         controller.close();
-                        void logQuery({ question: userMessage, searchQuery: p.searchQuery ?? null, scopeKey: sKey, mode: cached.mode, cacheHit: true, latencyMs: Date.now() - startedAt });
+                        void logQuery({ question: userMessage, searchQuery: p.searchQuery ?? null, scopeKey: sKey, mode: cached.mode, cacheHit: true, latencyMs: Date.now() - startedAt, provider: byok?.provider ?? null });
                         return;
                     }
                 }
@@ -421,7 +450,7 @@ export async function POST(request: NextRequest) {
                 let needsSearch = true;
                 let directResponse: string | undefined;
                 if (shouldReformulate(userMessage, conversationHistory)) {
-                    const r = await reformulateQuery(userMessage, conversationHistory, corpusLabel);
+                    const r = await reformulateQuery(userMessage, conversationHistory, corpusLabel, byok);
                     searchQuery = r.searchQuery || userMessage;
                     needsSearch = r.needsSearch;
                     directResponse = r.directResponse;
@@ -434,7 +463,7 @@ export async function POST(request: NextRequest) {
                     send({ type: 'token', text: directResponse });
                     send({ type: 'done', tokensUsed: 0, searchQuery: null, mode: 'direct' });
                     controller.close();
-                    void logQuery({ question: userMessage, scopeKey: sKey, mode: 'direct', cacheHit: false, latencyMs: Date.now() - startedAt });
+                    void logQuery({ question: userMessage, scopeKey: sKey, mode: 'direct', cacheHit: false, latencyMs: Date.now() - startedAt, provider: byok?.provider ?? null });
                     return;
                 }
 
@@ -454,7 +483,7 @@ export async function POST(request: NextRequest) {
                         send({ type: 'token', text: "I don't have transcript data on that specifically. Try rephrasing, or ask about a topic the archive covers (UFOs/UAP, disclosure, NHI, specific guests or channels)." });
                         send({ type: 'done', tokensUsed: 0, searchQuery, mode: 'not_covered' });
                         controller.close();
-                        void logQuery({ question: userMessage, searchQuery, scopeKey: sKey, mode: 'not_covered', cacheHit: false, chunkIds, topScore: topSimilarity, latencyMs: Date.now() - startedAt });
+                        void logQuery({ question: userMessage, searchQuery, scopeKey: sKey, mode: 'not_covered', cacheHit: false, chunkIds, topScore: topSimilarity, latencyMs: Date.now() - startedAt, provider: byok?.provider ?? null });
                         return;
                     }
 
@@ -468,7 +497,7 @@ export async function POST(request: NextRequest) {
                     if (cacheable && wantsExtracts) {
                         void putCachedQuery({ cacheKey: key, corpusVersion, scopeKey: sKey, normalizedQuestion: normalized, mode: 'extracts', payload: { extracts, searchQuery, topSimilarity } });
                     }
-                    void logQuery({ question: userMessage, searchQuery, scopeKey: sKey, mode: resolvedMode, cacheHit: false, chunkIds, topScore: topSimilarity, latencyMs: Date.now() - startedAt });
+                    void logQuery({ question: userMessage, searchQuery, scopeKey: sKey, mode: resolvedMode, cacheHit: false, chunkIds, topScore: topSimilarity, latencyMs: Date.now() - startedAt, provider: byok?.provider ?? null });
                     return;
                 }
 
@@ -483,24 +512,34 @@ export async function POST(request: NextRequest) {
                 const messages = buildMessages(userMessage, context, conversationHistory, buildSystemPrompt(corpusLabel));
                 send({ type: 'stage', stage: 'answering' });
 
-                const completion = await openai.chat.completions.create({
-                    model: SYNTH_MODEL,
-                    max_tokens: 2000,
-                    temperature: 0.5,
-                    messages,
-                    stream: true,
-                    stream_options: { include_usage: true },
-                });
-
                 let tokensUsed = 0;
                 let answer = '';
-                for await (const part of completion) {
-                    const delta = part.choices?.[0]?.delta?.content;
-                    if (delta) {
-                        answer += delta;
-                        send({ type: 'token', text: delta });
+                if (byok) {
+                    // Run synthesis on the user's model. `system` is split out of the
+                    // built message array (Anthropic needs it as a top-level param).
+                    const system = messages[0].content as string;
+                    const chatMessages = messages.slice(1) as { role: 'user' | 'assistant'; content: string }[];
+                    for await (const part of byokChatStream(byok, { system, messages: chatMessages, maxTokens: 2000, temperature: 0.5, signal: request.signal })) {
+                        if (part.text) { answer += part.text; send({ type: 'token', text: part.text }); }
+                        if (typeof part.usage === 'number') tokensUsed = part.usage;
                     }
-                    if (part.usage?.total_tokens) tokensUsed = part.usage.total_tokens;
+                } else {
+                    const completion = await openai.chat.completions.create({
+                        model: SYNTH_MODEL,
+                        max_tokens: 2000,
+                        temperature: 0.5,
+                        messages,
+                        stream: true,
+                        stream_options: { include_usage: true },
+                    });
+                    for await (const part of completion) {
+                        const delta = part.choices?.[0]?.delta?.content;
+                        if (delta) {
+                            answer += delta;
+                            send({ type: 'token', text: delta });
+                        }
+                        if (part.usage?.total_tokens) tokensUsed = part.usage.total_tokens;
+                    }
                 }
                 if (!answer) {
                     send({ type: 'token', text: 'Sorry, I had trouble generating a response. Try rephrasing your question.' });
@@ -509,7 +548,7 @@ export async function POST(request: NextRequest) {
                 // beat to generate answer-specific follow-ups before closing the stream.
                 send({ type: 'done', tokensUsed, searchQuery, mode: 'answer' });
 
-                const followups = answer ? await generateFollowups(userMessage, answer) : [];
+                const followups = answer ? await generateFollowups(userMessage, answer, byok) : [];
                 if (followups.length) send({ type: 'followups', followups });
                 controller.close();
 
@@ -517,10 +556,17 @@ export async function POST(request: NextRequest) {
                 if (cacheable && answer) {
                     void putCachedQuery({ cacheKey: key, corpusVersion, scopeKey: sKey, normalizedQuestion: normalized, mode: 'answer', payload: { answer, sources, searchQuery, topSimilarity, followups } });
                 }
-                void logQuery({ question: userMessage, searchQuery, scopeKey: sKey, mode: 'answer', cacheHit: false, chunkIds, topScore: topSimilarity, answerChars: answer.length, tokensUsed, latencyMs: Date.now() - startedAt });
+                void logQuery({ question: userMessage, searchQuery, scopeKey: sKey, mode: 'answer', cacheHit: false, chunkIds, topScore: topSimilarity, answerChars: answer.length, tokensUsed, latencyMs: Date.now() - startedAt, provider: byok?.provider ?? null });
             } catch (error) {
-                console.error('Ask API stream error:', error);
-                send({ type: 'error', message: 'Something went wrong generating the answer. Please retry.' });
+                if (error instanceof ByokError) {
+                    // Bring-your-own-model failure → clear, retryable-on-default error.
+                    // Log code only (never the key/full error object).
+                    console.error('Ask API byok error:', error.code);
+                    send({ type: 'error', message: byokUserMessage(error, byok), code: 'byok_failed', retryable: true });
+                } else {
+                    console.error('Ask API stream error:', error);
+                    send({ type: 'error', message: 'Something went wrong generating the answer. Please retry.' });
+                }
                 controller.close();
             }
         },

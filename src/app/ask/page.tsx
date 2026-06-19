@@ -8,6 +8,9 @@ import { ClipCard } from "@/components/ask/ClipCard";
 import { ExtractCards } from "@/components/ask/ExtractCards";
 import { streamAsk } from "@/lib/ask-client";
 import { STAGE_LABEL, type AskSource, type AskStage } from "@/lib/ask-types";
+import { AskProvider, useAsk } from "@/components/ask/AskProvider";
+import { ModelSettings } from "@/components/ask/ModelSettings";
+import { PROVIDER_PRESETS } from "@/lib/providers";
 
 interface Turn {
   id: number;
@@ -22,6 +25,8 @@ interface Turn {
   error: string | null;
   shareId?: string;
   followups?: string[];
+  /** A bring-your-own-model run failed → offer "retry on default". */
+  byokFailed?: boolean;
 }
 
 const FOLLOWUPS = [
@@ -45,6 +50,7 @@ function stageText(stage: AskStage | null, count: number | null): string {
 function AskPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { activeByok } = useAsk();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [activeCite, setActiveCite] = useState<number | null>(null);
   const [follow, setFollow] = useState("");
@@ -71,8 +77,13 @@ function AskPageInner() {
         { role: "assistant" as const, content: t.answer },
       ]);
 
-  const runTurn = (id: number, question: string, history: { role: "user" | "assistant"; content: string }[]) => {
-    patch(id, { answer: "", sources: [], extracts: [], stage: "searching", stageCount: null, done: false, error: null });
+  const runTurn = (
+    id: number,
+    question: string,
+    history: { role: "user" | "assistant"; content: string }[],
+    useDefault = false,
+  ) => {
+    patch(id, { answer: "", sources: [], extracts: [], stage: "searching", stageCount: null, done: false, error: null, byokFailed: false });
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -82,6 +93,7 @@ function AskPageInner() {
         history,
         ...(scopeRef.current.videoId ? { videoId: scopeRef.current.videoId } : {}),
         ...(scopeRef.current.channelId ? { channelId: scopeRef.current.channelId } : {}),
+        ...(activeByok && !useDefault ? { byok: activeByok } : {}),
       },
       (e) => {
         if (e.type === "stage") patch(id, { stage: e.stage, stageCount: e.count ?? null });
@@ -90,7 +102,7 @@ function AskPageInner() {
         else if (e.type === "token") appendAnswer(id, e.text);
         else if (e.type === "followups") patch(id, { followups: e.followups });
         else if (e.type === "done") patch(id, { done: true, stage: null });
-        else if (e.type === "error") patch(id, { done: true, stage: null, error: e.message });
+        else if (e.type === "error") patch(id, { done: true, stage: null, error: e.message, byokFailed: e.code === "byok_failed" });
       },
       controller.signal,
     ).catch((err) => {
@@ -368,14 +380,36 @@ function AskPageInner() {
                       }}
                     >
                       {turn.error}{" "}
-                      <button
-                        className="pop-link"
-                        style={{ color: "var(--accent)" }}
-                        onClick={() => runTurn(turn.id, turn.question, historyFromTurns(turn.id))}
-                        type="button"
-                      >
-                        Retry
-                      </button>
+                      {turn.byokFailed ? (
+                        <>
+                          <button
+                            className="pop-link"
+                            style={{ color: "var(--accent)" }}
+                            onClick={() => runTurn(turn.id, turn.question, historyFromTurns(turn.id), true)}
+                            type="button"
+                          >
+                            Retry on tubechat’s default model
+                          </button>
+                          {" · "}
+                          <button
+                            className="pop-link"
+                            style={{ color: "var(--ink-3)" }}
+                            onClick={() => runTurn(turn.id, turn.question, historyFromTurns(turn.id))}
+                            type="button"
+                          >
+                            Retry with my model
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="pop-link"
+                          style={{ color: "var(--accent)" }}
+                          onClick={() => runTurn(turn.id, turn.question, historyFromTurns(turn.id))}
+                          type="button"
+                        >
+                          Retry
+                        </button>
+                      )}
                     </div>
                   )}
 
@@ -426,6 +460,16 @@ function AskPageInner() {
             />
             <div className="row gap8">
               <span className="chip-sm">scope: thread</span>
+              <ModelSettings />
+              {activeByok && (
+                <span
+                  className="pill on"
+                  title={`Answering with ${PROVIDER_PRESETS[activeByok.provider].label}`}
+                  style={{ maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                >
+                  ⚙ {activeByok.model}
+                </span>
+              )}
               <button className="send" style={{ width: 30, height: 30 }} onClick={submitFollow} type="button">
                 ↑
               </button>
@@ -474,7 +518,9 @@ function AskPageInner() {
 export default function AskPage() {
   return (
     <Suspense fallback={null}>
-      <AskPageInner />
+      <AskProvider>
+        <AskPageInner />
+      </AskProvider>
     </Suspense>
   );
 }

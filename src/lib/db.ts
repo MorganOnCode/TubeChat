@@ -494,7 +494,9 @@ export async function putCachedQuery(args: {
     }
 }
 
-/** Append a query log row (eval set + telemetry). Fire-and-forget; never throws. */
+/** Append a query log row (eval set + telemetry). Fire-and-forget; never throws.
+ *  `provider` records the BYOK provider id (or null for the server default) so cost
+ *  dashboards can split user-billed traffic — NEVER the user's API key. */
 export async function logQuery(row: {
     question: string;
     searchQuery?: string | null;
@@ -506,17 +508,18 @@ export async function logQuery(row: {
     answerChars?: number;
     tokensUsed?: number;
     latencyMs?: number;
+    provider?: string | null;
 }): Promise<void> {
     try {
         await sql`
             INSERT INTO query_logs
                 (question, search_query, scope_key, mode, cache_hit, chunk_ids,
-                 top_score, answer_chars, tokens_used, latency_ms)
+                 top_score, answer_chars, tokens_used, latency_ms, provider)
             VALUES (${row.question}, ${row.searchQuery ?? null}, ${row.scopeKey ?? null},
                     ${row.mode}, ${row.cacheHit},
                     ${sql.json((row.chunkIds ?? []) as unknown as Parameters<typeof sql.json>[0])},
                     ${row.topScore ?? null}, ${row.answerChars ?? null},
-                    ${row.tokensUsed ?? null}, ${row.latencyMs ?? null})
+                    ${row.tokensUsed ?? null}, ${row.latencyMs ?? null}, ${row.provider ?? null})
         `;
     } catch (e) {
         console.error("query_logs write failed:", e);
